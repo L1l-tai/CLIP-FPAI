@@ -2,6 +2,7 @@
 # Model Card: CLIP
 
 该工程用于CLIP的FPAI实现
+
 Disclaimer: The model card is taken and modified from the official CLIP repository, it can be found [here](https://github.com/openai/CLIP/blob/main/model-card.md).
 
 ## Model Details
