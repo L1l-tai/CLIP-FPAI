@@ -1,0 +1,15 @@
+#!/bin/bash
+# 获取传入的参数
+FILENAME=temp.txt
+
+# 检查文件是否存在，如果不存在则创建并写入0
+if [ ! -f "$FILENAME" ]; then
+    echo "1" > "$FILENAME"
+    echo "The current commit times initialized with 1."
+else
+    echo "Add commit times "
+    NUMBER=$(grep -oE '[0-9]+' "$FILENAME" | head -n 1)
+    let NUMBER++
+    echo $NUMBER
+    echo "$NUMBER" > "$FILENAME"
+fi

@@ -1,0 +1,11 @@
+[AutoTune]
+priority = "accuracy" # accuracy  tradeoff performance
+round_num = 5
+float_cal = 0
+#cos_targetvalue = 0.9
+#dis_targetvalue = 0.05
+#mae_targetvalue = 0.05
+#mse_targetvalue = 0.05
+metrics_targetvalue = 1
+evalscript_path = "C:/Users/chendong/Desktop/AutoAnalysis/testcase/modelzoo_dev/pytorch/PointNet/3_deploy/modelzoo/PointNet/pyrt"
+evalscript_cmd = "D:/ProgramData/anaconda3/envs/mmrotate/python.exe test1.py"

@@ -1,0 +1,21 @@
+#!/bin/bash
+NUMBER=$(grep -oE '[0-9]+' temp.txt | head -n 1)
+# 获取当前时间戳
+TIMESTAMP=$(date +%Y%m%d%H%M%S)
+# 输出时间戳
+echo "Current timestamp: $TIMESTAMP"
+NEW_CONTENT="The version is: v$TIMESTAMP"
+echo "$NEW_CONTENT" > temp.txt
+sed -i '1 r temp.txt' version.log
+sed -i '1 d' version.log
+TIMESTAMP2=$(date +%Y-%m-%d\ %H\:%M\:%S)
+echo "******update time: $TIMESTAMP2 ******" > temp.txt
+sed -i '3 r temp.txt' version.log
+COMMIT_INFO=$(git log --oneline -$NUMBER | cut -d ' ' -f2-)
+echo "$COMMIT_INFO"
+echo "$COMMIT_INFO" > temp.txt
+sed -i '4 r temp.txt' version.log
+
+git add version.log
+git commit -m "Update version"
+rm temp.txt

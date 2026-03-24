@@ -1,0 +1,33 @@
+imodel: 
+  # --- 基础仿真配置 ---
+  mmuMode: true
+  cudamode: false      # 仿真模式下通常为 false
+  speedmode: false
+  compressFtmp: false
+  ocm_option: 4        # 建议设为 4 或保持 -1 让编译器自适应
+  
+  # --- 路径重定向 (核心修改) ---
+  # 指向你编译出的 CLIP ViT 目录
+  dir: ../../../../imodel/vit_b32/
+  stage: g             # 加载 generate 阶段的 .jr 文件
+  
+  # --- 运行模式 ---
+  runbackend: host     # 关键！仿真阶段保持 host，上板时改为 zg330
+  ip: 192.168.125.166  # 开发板 IP，仿真时作为占位
+  
+  # --- 输出控制 ---
+  save: true           # 开启，用于保存特征向量
+  show: false          # 设为 false，因为特征向量是数组，无法像 YOLO 那样画框
+  dump_output: false   # 调试算子数据流时可开启
+  dump_format: SFB
+  log_path: ../io/output/ftmp
+
+dataset:
+  # 图像输入路径
+  dir: ../io/input
+  list: ../io/list.txt
+  # CLIP 不需要 names 文件，直接删掉
+  res: ../io/output_features 
+
+# 💡 原有的 [param] 和 [camera] 部分全部删除
+# CLIP 是特征提取模型，不需要检测框（anchors）和后处理（nms）

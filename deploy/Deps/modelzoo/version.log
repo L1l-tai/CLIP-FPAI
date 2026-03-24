@@ -1,0 +1,78 @@
+The version is: v20251020155351
+
+The update log:
+******update time: 2025-10-20 15:53:51 ******
+
+******update time: 2025-10-20 15:53:42 ******
+feat: ✨icraft_utils.py支持zg330上板
+******update time: 2025-10-20 14:34:20 ******
+
+******update time: 2025-10-20 14:34:11 ******
+feat: ✨icraft_utils.py支持zg330上板
+******update time: 2025-10-20 14:30:14 ******
+
+******update time: 2025-10-20 14:30:05 ******
+feat: ✨icraft_utils.hpp支持zg330上板
+******update time: 2025-09-03 10:46:38 ******
+
+******update time: 2025-09-03 10:46:29 ******
+docs: 📝remove useless print of icraft_utils.py/initSession
+******update time: 2025-08-11 14:59:52 ******
+
+******update time: 2025-08-11 14:59:43 ******
+
+******update time: 2025-08-07 14:08:10 ******
+fix: 🐛 pyrtutils/calctime_utils support pandas 1.x & 2.x
+******update time: 2025-08-07 13:43:18 ******
+feat: ✨icraft_utils.py/hpp getJrPath support linux
+******update time: 2025-08-06 11:17:52 ******
+fix: 🐛 pyrtutils/calctime_utils support pandas 1.x & 2.x
+******update time: 2025-07-28 17:26:18 ******
+docs: 📝修改文档
+******update time: 2025-07-28 16:18:02 ******
+
+******update time: 2025-07-28 16:16:55 ******
+
+******update time: 2025-07-28 11:29:19 ******
+
+******update time: 2025-07-24 16:32:39 ******
+fix: 🐛updateDetpost支持仿真和上板情况下的修改阈值
+******update time: 2025-07-22 20:55:01 ******
+docs: 📝update C++_API_reference : dumpOutputFtmp
+******update time: 2025-07-22 20:42:21 ******
+feat: ✨CRT et_device fpgaDma support sint16 input
+******update time: 2025-07-22 20:38:04 ******
+docs: 📝update C++_API_reference & func dma_imk_Init
+******update time: 2025-07-17 11:21:38 ******
+fix: 🐛soft_nms修正为类内计算nms
+******update time: 2025-07-11 15:10:24 ******
+fix: 🐛fix pyrtutils/icraft_utils os==windows下xrt,xir变量的引用方式
+******update time: 2025-07-02 14:05:44 ******
+fix: 🐛修复pyrtutils-netinfo获取o_scale的逻辑，仅在网络有detpost时候才获取。
+******update time: 2025-06-30 15:34:40 ******
+feat: ✨pyrt Netinfo更正normratio获取方式
+******update time: 2025-06-30 14:27:57 ******
+fix: 🐛pyrt_utils更新dumpOutputFtmp接口与C++对齐
+******update time: 2025-06-10 16:13:36 ******
+feat: ✨icraft_utils支持运行linux_socket
+******update time: 2025-06-04 10:40:24 ******
+feat: ✨pyrt_utils添加dumpOutputFtmp
+******update time: 2025-06-03 15:51:58 ******
+feat: ✨icraft_utils添加dumpOutputFtmp
+******update time: 2025-05-21 15:13:53 ******
+feat: ✨et_device添加updateDetpost
+******update time: 2025-04-25 14:25:42 ******
+docs: 📝初始化3.30.0分支
+******update time: 2025-04-25 14:22:34 ******
+fix: 🐛修复by上speedmode和compressFtmp的开关逻辑
+******update time: 2025-04-08 09:33:20 ******
+fix: 🐛补充头文件及namespace
+******update time: 2025-04-02 11:50:32 ******
+feat: ✨getJrPath添加imodel输出信息
+******update time: 2025-03-20 18:02:04 ******
+feat: ✨补充mmumode参数
+perf: 👌调整参数顺序
+******update time: 2025-03-20 17:55:17 ******
+feat: ✨批量更新330mzu
+******update time: 2025-02-11 17:31:24 ******
+feat: ✨初始化330版本alpha分支
