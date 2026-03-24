@@ -35,6 +35,7 @@ def gather_naive(data: np.ndarray, indices: np.ndarray, axis: int = 0) -> np.nda
     # 3. 计算输出形状
     # output_shape = data_shape[:axis] + indices_shape + data_shape[axis+1:]
     output_shape = data_shape[:axis] + indices_shape + data_shape[axis+1:]
+    print(output_shape)
     
     # 4. 创建输出张量
     output = np.zeros(output_shape, dtype=data.dtype)
@@ -163,7 +164,7 @@ def test_gather_basic():
                      [7, 8, 9]])
     indices = np.array([0, 2])
     
-    output = gather_vectorized(data, indices, axis=0)
+    output = gather_naive(data, indices, axis=0)
     
     print(f"data 形状：{data.shape}")
     print(f"indices 形状：{indices.shape}")

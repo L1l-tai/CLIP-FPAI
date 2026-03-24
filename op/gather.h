@@ -1,15 +1,20 @@
-// 命名空间
+#include <icraft-xir/core/operation.h>
+#include <icraft-utils/logging.h>
+#include <icraft-xrt/core/tensor.h>
+#include <icraft-xrt/dev/host_device.h>
+#include <icraft-backends/hostbackend/decode_custom.h>
+#include <icraft-xir/core/functor.h>
+#include <icraft-xrt/dev/host_device.h>
+#include <icraft-backends/hostbackend/backend.h>
+
 namespace GatherOP {
     using namespace icraft::xir;
-    class GatherNode : public OpNodeBase<GatherNode, OneResult> {
+    class GatherNode : public OpNodeBase<GatherNode> {
     public:
-            int64_t num_groups;
-            float eps;
-            Optional<Params> gamma;
-            Optional<Params> beta;
+            int axis;
 
             ICRAFT_DECLARE_ATTRS(GatherNode) {
-
+                ICRAFT_ATTR_FIELD(axis);
             }
     };
 
@@ -18,8 +23,9 @@ namespace GatherOP {
             Gather() = default;
 
             // 构造函数也可以不提供
-            Gather(Value data, Value indices) {
+            Gather(Value data, Value indices, int axis = 0) {
                     auto node = make_object<GatherNode>();
+                    node->axis = axis; 
                     data_ = std::move(node);
                     this->setInputs({ data, indices });
             }
@@ -34,3 +40,4 @@ namespace GatherOP {
             op->validate();
             return Array<TensorType>{ op->inputs[0].tensorType().clone() };
                     });
+}
