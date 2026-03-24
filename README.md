@@ -1,14 +1,7 @@
----
-tags:
-- vision
-widget:
-- src: https://huggingface.co/datasets/mishig/sample_images/resolve/main/cat-dog-music.png
-  candidate_labels: playing music, playing sports
-  example_title: Cat & Dog
----
 
 # Model Card: CLIP
 
+该工程用于CLIP的FPAI实现
 Disclaimer: The model card is taken and modified from the official CLIP repository, it can be found [here](https://github.com/openai/CLIP/blob/main/model-card.md).
 
 ## Model Details
@@ -136,6 +129,14 @@ We find that the performance of CLIP - and the specific biases it exhibits - can
 
 We also tested the performance of CLIP on gender, race and age classification using the Fairface dataset (We default to using race categories as they are constructed in the Fairface dataset.) in order to assess quality of performance across different demographics. We found accuracy >96% across all races for gender classification with ‘Middle Eastern’ having the highest accuracy (98.4%) and ‘White’ having the lowest (96.5%). Additionally, CLIP averaged ~93% for racial classification and ~63% for age classification. Our use of evaluations to test for gender, race and age classification as well as denigration harms is simply to evaluate performance of the model across people and surface potential risks and not to demonstrate an endorsement/enthusiasm for such tasks.
 
+---
+tags:
+- vision
+widget:
+- src: https://huggingface.co/datasets/mishig/sample_images/resolve/main/cat-dog-music.png
+  candidate_labels: playing music, playing sports
+  example_title: Cat & Dog
+---
 
 
 ## Feedback
