@@ -11,7 +11,7 @@ namespace GatherOP {
     using namespace icraft::xir;
     class GatherNode : public OpNodeBase<GatherNode> {
     public:
-            int axis;
+            int64_t axis;
 
             ICRAFT_DECLARE_ATTRS(GatherNode) {
                 ICRAFT_ATTR_FIELD(axis);

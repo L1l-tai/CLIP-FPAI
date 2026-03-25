@@ -6,27 +6,8 @@
 
 
     namespace GatherOP {
+
             using namespace icraft::xrt;
-            // 计算均值
-            float mean(const std::vector<float>& data) {
-                    float sum = 0.0;
-                    for (const auto& value : data) {
-                            sum += value;
-                    }
-                    return sum / data.size();
-            }
-
-            // 计算方差
-            float variance(const std::vector<float>& data, float mean) {
-                    float sum_squared_diff = 0.0;
-                    for (const auto& value : data) {
-                            float diff = value - mean;
-                            sum_squared_diff += diff * diff;
-                    }
-                    return sum_squared_diff / data.size();
-            }
-
-
             // HostBackend中定义了各个算子在CPU/GPU上前向的过程
             // 下面向HostBackend中注册GroupNorm算子的前向过程
             // 一个算子的前向实现包含init和forward两个接口，分别用于初始化以及前向过程
@@ -47,9 +28,9 @@
                     auto data_shape = data_dtype->shape;
                     auto indices_shape = indices_dtype->shape;
 
-                    //Step3:获取并验证axis,支持[0,2],不支持负数
-                    //axis = axis % data_dtype.dimSize();
-                    ICRAFT_CHECK(axis <= 2 && axis >= 0).append("Only axis in [0,2] is supported!");
+                    //Step3:获取并验证axis
+                    axis = axis % data_dtype.dimSize();
+                    ICRAFT_CHECK(axis <= data_shape.size() && axis >= 0).append("Axis out of bond supported!");
                 
                     //step4:获取输出形状
                     Array<int64_t> output_shape;
@@ -66,29 +47,42 @@
                     //step5:创建输入输出数据
                     auto data_data = (float*)data.data().cptr();
                     auto indices_data = (int64_t*)indices.data().cptr();
-                    auto output_tensor = Tensor(output_dtype).mallocOn(HostDevice::MemRegion());
+                    auto output_tensor = Tensor(output_dtype);
+                    output_tensor.mallocOn(HostDevice::MemRegion());
                     auto output_data = (float*)output_tensor.data().cptr();
                     
                     //step6:逐元素gather
                     //tensor在内存中顺序排布，需要根据shape查找
                     int64_t pre_shape;
                     int64_t post_shape;
-                    int64_t indice; 
-                    for (int64_t i = 0; i < indices_shape[0]; i++){
-                        indice = indices_data[i];
-                        pre_shape = 1;
-                        post_shape = 1;
-                        //根据pre_shape和post_shape，定位data_Tensor中需要取出的数据
-                        for (int m = 0; m < axis; m++){
-                            pre_shape = pre_shape * data_shape[m];
+                    pre_shape = 1;
+                    post_shape = 1;
+                    //根据pre_shape和post_shape，定位data_Tensor中需要取出的数据
+                    for (int m = 0; m < axis; m++){
+                        pre_shape = pre_shape * data_shape[m];
+                    }
+                    for (int n = axis+1; n < data_shape.size(); n++){
+                        post_shape = post_shape * data_shape[n];
+                    }
+                    //遍历所有维度
+                    for (int64_t pre_idx = 0; pre_idx < pre_shape; pre_idx++) {
+                        for (int64_t idx_idx = 0; idx_idx < indices_shape[0]; idx_idx++) {
+                            for (int64_t post_idx = 0; post_idx < post_shape; post_idx++) {
+                                int64_t gather_idx = indices_data[idx_idx];
+            
+                                // 计算输入位置
+                                int64_t src_idx = pre_idx * (data_shape[axis] * post_shape) 
+                                        + gather_idx * post_shape 
+                                        + post_idx;
+            
+                                // 计算输出位置
+                                int64_t dst_idx = pre_idx * (indices_shape[0] * post_shape) 
+                                        + idx_idx * post_shape 
+                                        + post_idx;
+            
+                                output_data[dst_idx] = data_data[src_idx];
+                            }
                         }
-                        for (int n = axis+1; n < data_shape.size(); n++){
-                            post_shape = post_shape * data_shape[n];
-                        }
-                        for (int64_t j = 0; j < post_shape; j++){
-                            output_data[i * post_shape + j * pre_shape] = data_data[indice * post_shape + j * pre_shape];
-                        }
-                                                
                     }
 
                     return { output_tensor };

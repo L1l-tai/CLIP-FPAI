@@ -39,18 +39,6 @@ cmake_minimum_required (VERSION 3.24)
 	set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /DEBUG /OPT:REF /OPT:ICF")
     set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /DEBUG /OPT:REF /OPT:ICF")
 	add_definitions(-DYAML_CPP_STATIC_DEFINE)
-	include_directories(
-	    C:/IcraftMdz/ThirdParty_v0.2/Eigen-3.4.0/include
-	    C:/IcraftMdz/ThirdParty_v0.2/YamlCpp/include
-	    C:/IcraftMdz/ThirdParty_v0.2/opencv2/include
-	)
-	link_directories(C:/IcraftMdz/ThirdParty_v0.2/YamlCpp/lib)
-	link_directories(C:/IcraftMdz/ThirdParty_v0.2/opencv2/lib)
-	link_libraries(
-	opencv_world455 opencv_img_hash455 ade IlmImf ippicvmt ippiw
-	ittnotify libjpeg-turbo libopenjp2 libpng libprotobuf libtiff libwebp quirc zlib
-    yaml-cpp
-    )
 
 	find_package(Icraft-BuyiBackend REQUIRED)
 	find_package(Icraft-HostBackend REQUIRED)
