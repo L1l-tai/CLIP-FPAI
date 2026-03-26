@@ -36,7 +36,7 @@
                     Array<int64_t> output_shape;
                     for (int i = 0; i < data_shape.size(); i++) {
                         if (i == axis) {
-                             output_shape.push_back(indices_shape[0]);  // axis 维变为 indices 的长度
+                             output_shape.push_back(indices_shape[1]);  // axis 维变为 indices 的长度,且为indice的第1维
                         } else {
                              output_shape.push_back(data_shape[i]);
                         }
@@ -66,7 +66,7 @@
                     }
                     //遍历所有维度
                     for (int64_t pre_idx = 0; pre_idx < pre_shape; pre_idx++) {
-                        for (int64_t idx_idx = 0; idx_idx < indices_shape[0]; idx_idx++) {
+                        for (int64_t idx_idx = 0; idx_idx < indices_shape[1]; idx_idx++) {
                             for (int64_t post_idx = 0; post_idx < post_shape; post_idx++) {
                                 int64_t gather_idx = indices_data[idx_idx];
             
@@ -76,7 +76,7 @@
                                         + post_idx;
             
                                 // 计算输出位置
-                                int64_t dst_idx = pre_idx * (indices_shape[0] * post_shape) 
+                                int64_t dst_idx = pre_idx * (indices_shape[1] * post_shape) 
                                         + idx_idx * post_shape 
                                         + post_idx;
             
