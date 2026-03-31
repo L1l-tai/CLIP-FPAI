@@ -36,13 +36,20 @@
                     Array<int64_t> output_shape;
                     for (int i = 0; i < data_shape.size(); i++) {
                         if (i == axis) {
-                             output_shape.push_back(indices_shape[1]);  // axis 维变为 indices 的长度,且为indice的第1维
-                        } else {
-                             output_shape.push_back(data_shape[i]);
+                            output_shape.push_back(indices_shape[1]);  // axis 维变为 indices 的长度,且为indice的第1维
+                        } 
+                        else {
+                            output_shape.push_back(data_shape[i]);
                         }
                     }
                     TensorType output_dtype = data_dtype.clone();
                     output_dtype.setShape(output_shape);
+
+                    //step5:确定indeces类型
+                    int64_t indices_total = 1;
+                    for (int64_t i = 0; i < indices_shape.size(); i++) {
+                        indices_total *= indices_shape[i];
+                    }
 
                     //step5:创建输入输出数据
                     auto data_data = (float*)data.data().cptr();
@@ -66,9 +73,13 @@
                     }
                     //遍历所有维度
                     for (int64_t pre_idx = 0; pre_idx < pre_shape; pre_idx++) {
-                        for (int64_t idx_idx = 0; idx_idx < indices_shape[1]; idx_idx++) {
+                        for (int64_t idx_idx = 0; idx_idx < indices_total; idx_idx++) {
+                            int64_t gather_idx = indices_data[idx_idx];
+                            ICRAFT_CHECK(gather_idx >= 0 && gather_idx < axis)
+                                .append("Gather index {} out of range [0, {})!", 
+                                gather_idx, axis);
                             for (int64_t post_idx = 0; post_idx < post_shape; post_idx++) {
-                                int64_t gather_idx = indices_data[idx_idx];
+
             
                                 // 计算输入位置
                                 int64_t src_idx = pre_idx * (data_shape[axis] * post_shape) 
@@ -84,6 +95,7 @@
                             }
                         }
                     }
+                    ICRAFT_CHECK(false).append("output_shape:{},indices_shape{}",output_shape[0],indices_shape[1]);
 
                     return { output_tensor };
                             

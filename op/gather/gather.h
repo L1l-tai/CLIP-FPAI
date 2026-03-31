@@ -23,11 +23,11 @@ namespace GatherOP {
             Gather() = default;
 
             // 构造函数也可以不提供
-            Gather(Value data, Value indices, int axis = 0) {
+            Gather(Value indices, Value data, int64_t axis = 0) {
                     auto node = make_object<GatherNode>();
                     node->axis = axis; 
                     data_ = std::move(node);
-                    this->setInputs({ data, indices });
+                    this->setInputs({ indices, data });
             }
     };
 
@@ -38,6 +38,28 @@ namespace GatherOP {
     ICRAFT_REGISTER_OP_NODE(GatherNode)
             .set_tinfer<GatherNode, HostTarget>([](const auto* op) {
             op->validate();
-            return Array<TensorType>{ op->inputs[0].tensorType().clone() };
-                    });
+
+            auto data_dtype = op->inputs[1].tensorType();
+            auto indices_dtype = op->inputs[0].tensorType();
+            auto data_shape = data_dtype->shape;
+            auto indices_shape = indices_dtype->shape;
+            
+            int64_t axis = 0;
+            //auto attr_val = op->getAttr("axis");
+            //axis = attr_val;  // 解引用指针
+                
+            Array<int64_t> output_shape;
+            for (int i = 0; i < data_shape.size(); i++) {
+                if (i == axis) {
+                     output_shape.push_back(indices_shape[1]);  // axis 维变为 indices 的长度,且为indice的第1维
+                } 
+                else {
+                     output_shape.push_back(data_shape[i]);
+                }
+            }
+
+            auto output_dtype = data_dtype.clone();
+            output_dtype.setShape(output_shape);
+            return Array<TensorType>{ output_dtype };
+        });
 }
