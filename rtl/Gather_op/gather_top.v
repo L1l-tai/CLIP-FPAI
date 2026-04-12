@@ -3,7 +3,7 @@
 // File Name     : gather_top.v
 // Author        : Changtai Lin
 // Project       : 
-// Create Date   : 2021.03.31
+// Create Date   : 2026.04.05
 // Description   :
 // 
 //--------------------------------------------------------------------------------
@@ -31,7 +31,7 @@ module gather_top(
  
   //------------ DMA interface -------------------------
     output       [      31 : 0]   itf_awaddr        ,
-    output       [      63 : 0]   itf_awdata        ,
+    output       [      511 : 0]  itf_awdata        ,
     output                        itf_awvalid       ,
     input                         itf_awready       ,
 
@@ -39,7 +39,7 @@ module gather_top(
     output                        itf_arvalid       ,
     input                         itf_arready       ,
 
-    input        [      63 : 0]   itf_rdata         ,
+    input        [      511 : 0]  itf_rdata         ,
     input                         itf_rvalid        ,
     output                        itf_rready        ,
 
@@ -59,9 +59,9 @@ module gather_top(
     wire   [ 15: 0]   arsize_incdces;
     wire   [ 15: 0]   arbase_data;
     wire   [ 15: 0]   arsize_data;
-    wire   [ 15: 0]   awbase     ;
-    wire   [ 15: 0]   awsize     ;
-    wire   [ 63: 0]   comp_data  ; 
+    wire   [ 15: 0]   awbase_dout;
+    wire   [ 15: 0]   awsize_dout;
+    wire   [511: 0]   comp_data  ; 
     wire              data_valid ; 
     wire              data_ready ; 
 
@@ -69,6 +69,28 @@ module gather_top(
     wire              ra_rst_n_1 ;
     wire              comp_done_cross;
     wire              comp_start_cross;
+
+    // FSM internal signals
+    wire              rd_done;
+    wire              wr_done;
+    wire              addr_gen_valid;
+    wire [15:0]       arbase_data_gen;
+    wire [15:0]       arsize_data_gen;
+    wire [15:0]       awbase_gen;
+    wire [15:0]       awsize_gen;
+    wire              rd_last_line;
+    wire [15:0]       arbase;
+    wire [15:0]       arsize;
+    wire [15:0]       awbase;
+    wire [15:0]       awsize;
+    wire              rd_start;
+    wire              wr_start;
+    wire              rd_indices;
+    wire              trans_data;   
+    wire              gen_status;
+
+    wire [31:0]       indices_width;
+    wire [31:0]       data_width;
  
   /*-------------Regs are controled by runtime application------------*/
   reg_ctrl   U_reg_ctrl(   
@@ -93,8 +115,8 @@ module gather_top(
           .rbase2         ( arbase_data      ),
           .rsize2         ( arsize_data      ),
 
-          .wbase1         ( awbase           ),
-          .wsize1         ( awsize           ),
+          .wbase1         ( awbase_dout      ),
+          .wsize1         ( awsize_dout      ),
           
           .rfu_rreg0     ( 32'd0            ),       //read reg;                                            
           .rfu_rreg1     ( 32'd0            ),                                              
@@ -107,8 +129,8 @@ module gather_top(
           .rfu_rreg8     ( 32'd0            ),                                              
           .rfu_rreg9     ( 32'd0            ),                                              
    
-          .rfu_wreg0     (                  ),       //wirte reg;                                      
-          .rfu_wreg1     (                  ),                                              
+          .rfu_wreg0     ( indices_width    ),       //wirte reg;                                      
+          .rfu_wreg1     ( data_width       ),                                              
           .rfu_wreg2     (                  ),                                              
           .rfu_wreg3     (                  ),                                              
           .rfu_wreg4     (                  ),                                              
@@ -123,43 +145,99 @@ module gather_top(
    
    );
 
+   // Instantiate Gather FSM
+   gather_fsm U_gather_fsm (
+       .rd_done          ( rd_done          ), // input
+       .wr_done          ( wr_done          ), // input
+       .comp_start       ( comp_start_cross ), // input
+       
+       .arbase_incdces   ( arbase_incdces   ), // input
+       .arsize_incdces   ( arsize_incdces   ), // input
+       .arbase_data_gen  ( arbase_data_gen  ), // input
+       .arsize_data_gen  ( arsize_data_gen  ), // input
+       .awbase_gen       ( awbase_gen       ), // input
+       .awsize_gen       ( awsize_gen       ), // input
+       .addr_gen_valid   ( addr_gen_valid   ), // input
+       .rd_last_line     ( rd_last_line     ), // input
+       
+       .arbase           ( arbase          ), // output
+       .arsize           ( arsize          ), // output
+       .awbase           ( awbase          ), // output
+       .awsize           ( awsize          ), // output
+       
+       .rd_start         ( rd_start         ), // output
+       .wr_start         ( wr_start         ), // output
+       .comp_done        ( comp_done        ), // output
+       .rd_indices       ( rd_indices       ), // output
+       .gen_status       ( gen_status       ), // output
+       .trans_data       ( trans_data       ), // output
+       
+       .clk              ( clk              ), // input
+       .rst_n            ( rst_n_1          )  // input
+   );
+
    dma    U_dma(
 
-       .arbase           ( arbase           ),
-       .arsize           ( arsize           ),
+       .arbase           ( arbase           ), // input
+       .arsize           ( arsize           ), // input
      
-       .awbase           ( awbase           ),
-       .awsize           ( awsize           ),
+       .awbase           ( awbase           ), // input
+       .awsize           ( awsize           ), // input
                          
-       .araddr           ( itf_araddr       ),
-       .arvalid          ( itf_arvalid      ),
-       .arready          ( itf_arready      ),
+       .araddr           ( itf_araddr       ), // output
+       .arvalid          ( itf_arvalid      ), // output
+       .arready          ( itf_arready      ), // input
 
-       .comp_data        ( comp_data        ),
-       .data_valid       ( data_valid       ),
-       .data_ready       ( data_ready       ),
+       .comp_data        ( comp_data        ), // input
+       .data_valid       ( data_valid       ), // input
+       .data_ready       ( data_ready       ), // output
                          
-       .awaddr           ( itf_awaddr       ),
-       .awdata           ( itf_awdata       ),
-       .awvalid          ( itf_awvalid      ),
-       .awready          ( itf_awready      ),
+       .awaddr           ( itf_awaddr       ), // output
+       .awdata           ( itf_awdata       ), // output
+       .awvalid          ( itf_awvalid      ), // output
+       .awready          ( itf_awready      ), // input
 
-       .comp_start       ( comp_start_cross ),
+       .rd_start         ( rd_start         ), // input
+       .wr_start         ( wr_start         ), // input
 
-       .clk              ( clk              ),
-       .rst_n            ( rst_n_1          )
+       .rd_done          ( rd_done          ), // output
+       .wr_done          ( wr_done          ), // output
+
+      // .comp_start       ( comp_start_cross ),
+
+       .clk              ( clk              ), // input
+       .rst_n            ( rst_n_1          )  // input
   );
+
+
    
-  adder    U_adder(
-        .a               ( itf_rdata[31:0]  ),
-        .a_valid         ( itf_rvalid       ),
-        .a_ready         ( itf_rready       ),
+  gather    U_gather(
+        .rd_indices      ( rd_indices       ),
+        .trans_data      ( trans_data       ),
+        .gen_status      ( gen_status       ),
+        .indices_width   ( indices_width    ),
 
-        .sum             ( comp_data        ),
-        .sum_valid       ( data_valid       ),
-        .sum_ready       ( data_ready       ),
+        .din             ( itf_rdata        ),
+        .din_valid       ( itf_rvalid       ),
+        .din_ready       ( itf_rready       ),
 
-        .arsize          ( arsize           ),
+        .arbase_data     ( arbase_data      ),
+        .arsize_data     ( arsize_data      ),
+        .awbase_dout     ( awbase_dout      ),
+        .awsize_dout     ( awsize_dout      ),
+
+        .addr_gen_valid  ( addr_gen_valid   ),
+        .arbase_data_gen ( arbase_data_gen  ),
+        .arsize_data_gen ( arsize_data_gen  ),
+        .awbase_gen      ( awbase_gen       ),
+        .awsize_gen      ( awsize_gen       ),
+        .rd_last_line    ( rd_last_line     ),
+
+        .dout            ( comp_data        ),
+        .dout_valid      ( data_valid       ),
+        .dout_ready      ( data_ready       ),
+
+        //.arsize          ( arsize           ),
         .comp_done       ( comp_done        ),
 
         .clk             ( clk              ),

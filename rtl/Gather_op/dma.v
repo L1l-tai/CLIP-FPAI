@@ -25,12 +25,12 @@ module dma(
     output  reg                arvalid       , // 读地址有效信号
     input                      arready       , // 读地址就绪信号
 
-    input         [ 63: 0]     comp_data     , // 计算结果数据输入
+    input         [511: 0]     comp_data     , // 计算结果数据输入
     input                      data_valid    , // 计算数据有效信号
     output                     data_ready    , // 数据接收就绪信号
 
     output  reg   [ 31: 0]     awaddr        , // 写地址总线
-    output        [ 63: 0]     awdata        , // 写数据总线
+    output        [511: 0]     awdata        , // 写数据总线
     output                     awvalid       , // 写地址/数据有效信号
     input                      awready       , // 写地址/数据就绪信号
 
@@ -89,7 +89,7 @@ module dma(
    always@(posedge clk or negedge rst_n)begin
         if(rst_n==1'b0)
             dma_cnt1 <= #0.1 0;
-        else if(wr_start)
+        else if(wr_start && !wr_active)
             dma_cnt1 <= #0.1 awsize;
         else if(aawvalid & aawready)
             dma_cnt1 <= #0.1 dma_cnt1 - 1'b1;
@@ -123,7 +123,7 @@ module dma(
    always@(posedge clk or negedge rst_n)begin
         if(rst_n==1'b0)
             dma_cnt0 <= #0.1 0;
-        else if(rd_start)
+        else if(rd_start && !rd_active)
             dma_cnt0 <= #0.1 arsize;
         else if(arvalid & arready)
             dma_cnt0 <= #0.1 dma_cnt0-1'b1;

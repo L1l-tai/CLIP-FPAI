@@ -1,0 +1,205 @@
+//================================================================================
+// Orgnization   : School of Electronic Science, NUDT
+// File Name     : gather_top.v
+// Author        : Changtai Lin
+// Project       : 
+// Create Date   : 2026.04.10
+// Description   :
+// 
+//--------------------------------------------------------------------------------
+// Modification History :
+// Rev     Date         Who               Description
+// 0.5.0   2021.03.31   Changtai Lin      Modify transformation logic of Gather OP
+//================================================================================
+
+module gather (
+    input                   rd_indices    ,     // dma读索引信号
+    input                   trans_data    ,
+    input                   gen_status    ,
+    input        [31:0]     indices_width ,
+    input        [31:0]     data_width    ,
+
+    input        [511 : 0]  din           ,
+    input                   din_valid     ,
+    output                  din_ready     ,
+
+    input        [15 : 0]   arbase_data   ,
+    input        [15 : 0]   arsize_data   ,
+    input        [15 : 0]   awbase_dout   ,
+    input        [15 : 0]   awsize_dout   ,
+
+    output  reg             addr_gen_valid ,
+    output       [15 : 0]   arbase_data_gen,
+    output       [15 : 0]   arsize_data_gen,
+    output       [15 : 0]   awbase_gen,
+    output       [15 : 0]   awsize_gen,
+    output  reg             rd_last_line,
+
+    output       [511 : 0]  dout          ,
+    output                  dout_valid    ,
+    input                   dout_ready    ,
+    
+    //input      [ 15: 0]     arsize        ,
+    input                   comp_done     ,
+
+    input                   clk           ,
+    input                   rst_n
+);
+
+wire                        indices_fifo_winc;
+wire    [511 : 0]           indices_fifo_wdata;
+wire                        indices_fifo_almost_full;
+wire                        indices_fifo_empty; 
+wire                        indices_fifo_rinc;
+wire    [511 : 0]           indices_fifo_dout;
+
+wire    [511 : 0]           current_indices;
+reg     [3 : 0]             current_indices_cnt;
+reg     [7 : 0]             output_addr_cnt;
+reg                         rinc_pulse_gen; //生成单周期脉冲的状态寄存器
+reg                         trans_data_reg;
+wire                        trans_data_pos;
+wire    [31 : 0]            indice_now;
+
+wire    [511 : 0]           dout_rs    ;
+wire                        dout_valid_rs  ;
+wire                        dout_ready_rs  ;
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        trans_data_reg <= 1'b0;
+    end
+    else begin
+        trans_data_reg <= trans_data;
+    end
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        indices_fifo_rinc <= 1'b0;
+        rinc_pulse_gen    <= 1'b0;
+        //初始值为1，初始cnt为0时不拉高rinc
+    end
+    else begin 
+        // 当计数器为0时，尝试生成一个周期的读取脉冲
+        if (current_indices_cnt == 0 & ~rd_indices) begin
+            if (!rinc_pulse_gen) begin
+                indices_fifo_rinc <= 1'b1;
+                rinc_pulse_gen    <= 1'b1;
+            end
+            else begin
+                indices_fifo_rinc <= 1'b0;
+            end
+        end
+        else begin
+            indices_fifo_rinc <= 1'b0;
+            rinc_pulse_gen    <= 1'b0; // 复位脉冲生成器，允许下一次 cnt==0 时触发
+        end
+    end    
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        current_indices_cnt <= 4'd0;
+        output_addr_cnt <= 8'd0;
+    end
+    else begin
+        if(trans_data_pos) begin
+            //每完成一次地址生成，即进入下一个状态时，cnt加1
+            current_indices_cnt <= current_indices_cnt + 4'd1;
+            output_addr_cnt <= output_addr_cnt + 8'd1;
+        end
+        else if(comp_done) begin
+            current_indices_cnt <= 4'd0;
+            output_addr_cnt <= 8'd0;
+        end
+        else begin
+            current_indices_cnt <= current_indices_cnt;
+            output_addr_cnt <= output_addr_cnt;
+        end
+    end
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if(!rst_n) begin
+        addr_gen_valid <= 1'b0;
+    end
+    else begin
+        if(gen_status && ~rd_indices) begin
+            addr_gen_valid <= 1'b1;
+        end
+        else begin
+            addr_gen_valid <= 1'b0;
+        end
+    end
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        rd_last_line <= 1'b0;
+    end
+    else begin
+        if(gen_status) begin
+            rd_last_line <= output_addr_cnt == indices_width - 1;
+        end
+        else if(comp_done) begin
+            rd_last_line <= 1'b0;
+        end
+        else begin
+            rd_last_line <= rd_last_line;
+        end
+    end
+end
+
+assign trans_data_pos = ~trans_data_reg & trans_data;
+
+assign indice_now = current_indices[current_indices_cnt*32+31 : current_indices_cnt*32];
+assign arbase_data_gen = arbase_data + indice_now * data_width;
+assign arsize_data_gen = data_width;
+assign awbase_gen = awbase_dout + output_addr_cnt * data_width;
+assign awsize_gen = data_width;
+
+assign dout_rs = rd_indices ? 512'd0 : din;
+assign din_ready = rd_indices ? ~indices_fifo_almost_full : dout_ready_rs;
+assign dout_valid_rs  = din_valid && din_ready;
+
+assign indices_fifo_winc = rd_indices & din_valid & ~indices_fifo_almost_full;
+assign indices_fifo_wdata = rd_indices ? din : 512'b0;
+assign current_indices = indices_fifo_empty ? 512'b0 : indices_fifo_dout;
+
+sync_fifo_reg
+#(
+    .ALMOST_FULL_TH (20),
+    .DSIZE          (512),
+    .ASIZE          (5)
+)
+ofm_data_fifo_0
+(
+    .clk            (clk                      ),//input 
+    .rst_n          (rst_n                    ),//input 
+    .winc           (indices_fifo_winc        ),//input 
+    .wdata          (indices_fifo_wdata       ),//input 
+    .wfull          (                         ),//output
+    .wfull_almost   (indices_fifo_almost_full ),//output
+    .rempty         (indices_fifo_empty       ),//output
+    .rinc           (indices_fifo_rinc        ),//input 
+    .rdata          (indices_fifo_dout        )	//output
+);
+
+// 实例化 AVR 寄存器切片模块 (avr_rs)
+// 作用：隔离组合逻辑路径，改善时序，并提供背压处理能力
+avr_rs #(.DW(512)) U_avr_rs(
+    .m_data      ( dout_rs         ),//I - 主接口数据输入
+    .m_valid     ( dout_valid_rs   ),//I - 主接口有效信号
+    .m_ready     ( dout_ready_rs   ),//O - 主接口就绪信号
+
+    .s_data      ( dout            ),//O - 从接口数据输出
+    .s_valid     ( dout_valid      ),//O - 从接口有效信号
+    .s_ready     ( dout_ready      ),//I - 从接口就绪信号
+
+    .clk         ( clk            ),
+    .rst_n       ( rst_n          )
+);
+
+
+endmodule
