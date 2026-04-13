@@ -20,17 +20,17 @@ module gather_fsm (
     // 只需要对读地址进行仲裁
     input [15:0]        arbase_incdces,
     input [15:0]        arsize_incdces,
-    input [15:0]        arbase_data_gen,
+    input [31:0]        arbase_data_gen,
     input [15:0]        arsize_data_gen,
-    input [15:0]        awbase_gen,
+    input [31:0]        awbase_gen,
     input [15:0]        awsize_gen,
     input               addr_gen_valid,
     // 读最后一行数据时拉高
     input               rd_last_line,
 
-    output reg [15:0]   arbase,
+    output reg [31:0]   arbase,
     output reg [15:0]   arsize,
-    output reg [15:0]   awbase,
+    output reg [31:0]   awbase,
     output reg [15:0]   awsize,
 
     output reg          rd_start,
@@ -53,10 +53,10 @@ localparam  COMP_DONE = 3'd5    ;
 
 reg         rd_done_reg;
 reg         wr_done_reg;
-reg [15:0]  arbase_data_gen_reg;
-reg [15:0]  arsize_data_gen_reg;
-reg [15:0]  awbase_gen_reg;
-reg [15:0]  awsize_gen_reg;
+reg [31:0]  arbase_data_gen_reg;
+reg [31:0]  arsize_data_gen_reg;
+reg [31:0]  awbase_gen_reg;
+reg [31:0]  awsize_gen_reg;
 
 reg [2:0]   state;
 reg [2:0]   next_state;
@@ -209,9 +209,9 @@ end
 // Output logic
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        arbase <= #0.1 16'd0;
+        arbase <= #0.1 32'd0;
         arsize <= #0.1 16'd0;
-        awbase <= #0.1 16'd0;
+        awbase <= #0.1 32'd0;
         awsize <= #0.1 16'd0;
         comp_done <= #0.1 1'b0;
         rd_indices <= #0.1 1'b0;
@@ -222,9 +222,9 @@ always @(posedge clk or negedge rst_n) begin
         case (state)
             IDLE: begin
                 // All control signals low
-                arbase <= #0.1 16'd0;
+                arbase <= #0.1 32'd0;
                 arsize <= #0.1 16'd0;
-                awbase <= #0.1 16'd0;
+                awbase <= #0.1 32'd0;
                 awsize <= #0.1 16'd0;
                 comp_done <= #0.1 1'b0;
                 rd_indices <= #0.1 1'b0;
@@ -235,7 +235,7 @@ always @(posedge clk or negedge rst_n) begin
                 // Set arbase and arsize pointing to indices
                 arbase <= #0.1 arbase_incdces;
                 arsize <= #0.1 arsize_incdces;
-                awbase <= #0.1 16'd0;
+                awbase <= #0.1 32'd0;
                 awsize <= #0.1 16'd0;
                 // Typically assert start signal here if triggering DMA
                 comp_done <= #0.1 1'b0;
@@ -246,7 +246,7 @@ always @(posedge clk or negedge rst_n) begin
             R_INDICES_DONE: begin
                 arbase <= #0.1 arbase;
                 arsize <= #0.1 arsize;
-                awbase <= #0.1 16'd0;
+                awbase <= #0.1 32'd0;
                 awsize <= #0.1 16'd0;
                 comp_done <= #0.1 1'b0;
                 rd_indices <= #0.1 1'b0;
@@ -275,9 +275,9 @@ always @(posedge clk or negedge rst_n) begin
                 gen_status <= #0.1 1'b0;
             end
             COMP_DONE: begin
-                arbase <= #0.1 16'b0;
+                arbase <= #0.1 32'b0;
                 arsize <= #0.1 16'b0;
-                awbase <= #0.1 16'b0;
+                awbase <= #0.1 32'b0;
                 awsize <= #0.1 16'b0;
                 comp_done <= #0.1 1'b1;
                 rd_indices <= #0.1 1'b0;
@@ -285,9 +285,9 @@ always @(posedge clk or negedge rst_n) begin
                 gen_status <= #0.1 1'b0;
             end
             default: begin
-                arbase <= #0.1 16'b0;
+                arbase <= #0.1 32'b0;
                 arsize <= #0.1 16'b0;
-                awbase <= #0.1 16'b0;
+                awbase <= #0.1 32'b0;
                 awsize <= #0.1 16'b0;    
                 comp_done <= #0.1 1'b0;
                 rd_indices <= #0.1 1'b0;

@@ -15,10 +15,10 @@
 
 module dma(
 
-    input         [ 15: 0]     arbase        , // 读地址基地址
+    input         [ 31: 0]     arbase        , // 读地址基地址
     input         [ 15: 0]     arsize        , // 读数据长度（字数）
                                             
-    input         [ 15: 0]     awbase        , // 写地址基地址
+    input         [ 31: 0]     awbase        , // 写地址基地址
     input         [ 15: 0]     awsize        , // 写数据长度（字数）
 
     output  reg   [ 31: 0]     araddr        , // 读地址总线

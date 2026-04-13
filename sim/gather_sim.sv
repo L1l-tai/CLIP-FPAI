@@ -24,7 +24,7 @@ module gather_sim;
     
     localparam IDX_BASE_ADDR = 32'h0000_1000;
     localparam SRC_BASE_ADDR = 32'h0000_2000;
-    localparam DST_BASE_ADDR = 32'h0000_6000;
+    localparam DST_BASE_ADDR = 32'h0001_0000;
 
     // 输入信号
     reg clk;
@@ -106,7 +106,7 @@ module gather_sim;
 
     // 仿真用内存模型
     // 修改: 增加内存大小至 1024 行，每行 512-bit
-    reg [511:0] mem [0:1023]; 
+    reg [511:0] mem [0:2047]; 
     integer i;
     reg error_flag;
 
@@ -131,7 +131,8 @@ module gather_sim;
     integer mem_idx;
     integer byte_off;
     integer expected_indices [INDICES_LEN];
-    
+    reg read_busy;
+
     // 复位序列
     initial begin
         // 初始化输出
@@ -148,6 +149,7 @@ module gather_sim;
         itf_arready = 0;
         itf_rdata = 0;
         itf_rvalid = 0;
+        read_busy = 0;
 
         // 等待全局复位
         #100;
@@ -158,7 +160,7 @@ module gather_sim;
         // 初始化内存数组所有单元为0
         $display("Initializing Memory Array...");
         // 修改: 循环上限改为 1024 以匹配新的内存大小
-        for (i = 0; i < 1024; i = i + 1) begin
+        for (i = 0; i < 2048; i = i + 1) begin
             mem[i] = 512'd0;
         end
 
@@ -235,12 +237,12 @@ module gather_sim;
         // 4. 设置 Read Data Base & Size (rbase2/rsize2, Addr 0x03)
         // 修改: Size = INDICES_LEN * DATA_WIDTH_BEATS
         // 20 * 8 = 160 Beats.
-        ra_write_reg(16'h03, {16'(INDICES_LEN * DATA_WIDTH_BEATS), SRC_BASE_ADDR[15:0]});
+        ra_write_reg(16'h03,  SRC_BASE_ADDR);
 
         // 5. 设置 Write Base & Size (wbase1/wsize1, Addr 0x02)
         // 修改: Size = INDICES_LEN * DATA_WIDTH_BEATS
         // 输出也是同样大小的数据量
-        ra_write_reg(16'h02, {16'(INDICES_LEN * DATA_WIDTH_BEATS), DST_BASE_ADDR[15:0]});
+        ra_write_reg(16'h02,  DST_BASE_ADDR);
 
         // 6. 启动计算 (COMP_START_ADDR = 16'h00)
         $display("Starting Computation...");
@@ -355,8 +357,9 @@ module gather_sim;
             while (trans_count < max_trans) begin 
                 @(posedge clk);
                 
-                // 处理读地址通道 (AR)
-                if (itf_arvalid && !itf_arready) begin
+                // 修改: 处理读地址通道 (AR)
+                // 只有当读通道不忙 (!read_busy) 且 DUT 发出有效地址请求 (itf_arvalid) 时，才拉高 ready
+                if (itf_arvalid && !itf_arready && !read_busy) begin
                     itf_arready <= 1;
                     $display("TB: Received AR Addr: 0x%08X", itf_araddr);
                 end else begin
@@ -372,13 +375,13 @@ module gather_sim;
                             integer byte_off;
                             reg [511:0] temp_data;
                             
+                            read_busy <= 1;
+
                             r_idx = get_mem_index(itf_araddr);
                             byte_off = get_byte_offset(itf_araddr);
                             
-                            // 简单模型：直接返回对齐的数据
-                            // 如果地址不对齐，可能需要移位，但 DMA 通常是对齐的
+                            // 直接返回对齐的数据
                             temp_data = mem[r_idx];
-                            
                             itf_rdata <= temp_data;
                             itf_rvalid <= 1;
                             $display("TB: Sent R Data 0x%16X from Idx %d (Addr 0x%08X)", mem[r_idx][63:0], r_idx, itf_araddr);
@@ -387,6 +390,8 @@ module gather_sim;
                             @(posedge clk);
                             itf_rvalid <= 0;
                             
+                            // 在 valid 拉低的同时或之后解除 busy
+                            read_busy <= 0;
 
                         end
                     join_none

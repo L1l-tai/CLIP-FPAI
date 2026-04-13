@@ -57,10 +57,10 @@ module gather_top(
     wire              comp_done  ;
     wire   [ 15: 0]   arbase_incdces;
     wire   [ 15: 0]   arsize_incdces;
-    wire   [ 15: 0]   arbase_data;
-    wire   [ 15: 0]   arsize_data;
-    wire   [ 15: 0]   awbase_dout;
-    wire   [ 15: 0]   awsize_dout;
+    wire   [ 31: 0]   arbase_data;
+    //wire   [ 15: 0]   arsize_data;
+    wire   [ 31: 0]   awbase_dout;
+    //wire   [ 15: 0]   awsize_dout;
     wire   [511: 0]   comp_data  ; 
     wire              data_valid ; 
     wire              data_ready ; 
@@ -74,14 +74,14 @@ module gather_top(
     wire              rd_done;
     wire              wr_done;
     wire              addr_gen_valid;
-    wire [15:0]       arbase_data_gen;
+    wire [31:0]       arbase_data_gen;
     wire [15:0]       arsize_data_gen;
-    wire [15:0]       awbase_gen;
+    wire [31:0]       awbase_gen;
     wire [15:0]       awsize_gen;
     wire              rd_last_line;
-    wire [15:0]       arbase;
+    wire [31:0]       arbase;
     wire [15:0]       arsize;
-    wire [15:0]       awbase;
+    wire [31:0]       awbase;
     wire [15:0]       awsize;
     wire              rd_start;
     wire              wr_start;
@@ -113,10 +113,10 @@ module gather_top(
           .rbase1         ( arbase_incdces   ),
           .rsize1         ( arsize_incdces   ),
           .rbase2         ( arbase_data      ),
-          .rsize2         ( arsize_data      ),
+          //.rsize2         ( arsize_data      ),
 
           .wbase1         ( awbase_dout      ),
-          .wsize1         ( awsize_dout      ),
+          //.wsize1         ( awsize_dout      ),
           
           .rfu_rreg0     ( 32'd0            ),       //read reg;                                            
           .rfu_rreg1     ( 32'd0            ),                                              
@@ -223,9 +223,9 @@ module gather_top(
         .din_ready       ( itf_rready       ),
 
         .arbase_data     ( arbase_data      ),
-        .arsize_data     ( arsize_data      ),
+        //.arsize_data     ( arsize_data      ),
         .awbase_dout     ( awbase_dout      ),
-        .awsize_dout     ( awsize_dout      ),
+        //.awsize_dout     ( awsize_dout      ),
 
         .addr_gen_valid  ( addr_gen_valid   ),
         .arbase_data_gen ( arbase_data_gen  ),

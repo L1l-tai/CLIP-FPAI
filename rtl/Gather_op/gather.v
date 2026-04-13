@@ -23,15 +23,15 @@ module gather (
     input                   din_valid     ,
     output                  din_ready     ,
 
-    input        [15 : 0]   arbase_data   ,
-    input        [15 : 0]   arsize_data   ,
-    input        [15 : 0]   awbase_dout   ,
-    input        [15 : 0]   awsize_dout   ,
+    input        [31 : 0]   arbase_data   ,
+    //input        [15 : 0]   arsize_data   ,
+    input        [31 : 0]   awbase_dout   ,
+    //input        [15 : 0]   awsize_dout   ,
 
     output  reg             addr_gen_valid ,
-    output       [15 : 0]   arbase_data_gen,
+    output       [31 : 0]   arbase_data_gen,
     output       [15 : 0]   arsize_data_gen,
-    output       [15 : 0]   awbase_gen,
+    output       [31 : 0]   awbase_gen,
     output       [15 : 0]   awsize_gen,
     output  reg             rd_last_line,
 

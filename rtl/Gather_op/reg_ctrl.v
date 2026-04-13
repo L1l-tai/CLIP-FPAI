@@ -34,11 +34,11 @@ module reg_ctrl(
     output reg    [   15 : 0]   rbase1           ,
     output reg    [   15 : 0]   rsize1           ,
 
-    output reg    [   15 : 0]   wbase1           ,
-    output reg    [   15 : 0]   wsize1           ,
+    output reg    [   31 : 0]   wbase1           ,
+    //output reg    [   15 : 0]   wsize1           ,
 
-    output reg    [   15 : 0]   rbase2           ,
-    output reg    [   15 : 0]   rsize2           ,
+    output reg    [   31 : 0]   rbase2           ,
+    //output reg    [   15 : 0]   rsize2           ,
 
     //output reg    [   15 : 0]   wbase2           ,
     //output reg    [   15 : 0]   wsize2           ,
@@ -144,22 +144,22 @@ module reg_ctrl(
      always@(posedge clk or negedge rst_n) begin
        if(rst_n==1'b0)begin
             wbase1 <= #0.1 0;
-            wsize1 <= #0.1 0;
+            //wsize1 <= #0.1 0;
        end
        else if(ra_awevent && ra_awaddr==WSIZE1_BASE_ADDR)begin
-            wbase1 <= #0.1  ra_awdata[15:0];
-            wsize1 <= #0.1  ra_awdata[31:16];
+            wbase1 <= #0.1  ra_awdata[31:0];
+            //wsize1 <= #0.1  ra_awdata[31:16];
        end
     end
 
     always@(posedge clk or negedge rst_n) begin
        if(rst_n==1'b0)begin
             rbase2 <= #0.1 0;
-            rsize2 <= #0.1 0;
+            //rsize2 <= #0.1 0;
        end
        else if(ra_awevent && ra_awaddr==RSIZE2_BASE_ADDR)begin
-            rbase2 <= #0.1 ra_awdata[15:0];
-            rsize2 <= #0.1 ra_awdata[31:16];
+            rbase2 <= #0.1 ra_awdata[31:0];
+            //rsize2 <= #0.1 ra_awdata[31:16];
        end
     end
 
