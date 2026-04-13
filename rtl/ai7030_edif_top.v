@@ -240,7 +240,7 @@ rx_sdi rx_sdi_inst (
 assign User_Ddr_awwinfo = {1'b0, {64{1'b1}}, 6'b0, 1'b1};
 assign User_Ddr_arinfo  = {25'h0, 6'b0, 1'b1};
 
-adder_top U_adder_top(
+gather_top U_gather_top(
   .itf_ra_awaddr    (User_Reg_awwaddr      ),
   .itf_ra_awdata    (User_Reg_awwdata      ),
   .itf_ra_awvalid   (User_Reg_awwvalid     ),

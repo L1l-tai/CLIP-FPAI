@@ -29,10 +29,10 @@ module gather (
     //input        [15 : 0]   awsize_dout   ,
 
     output  reg             addr_gen_valid ,
-    output       [31 : 0]   arbase_data_gen,
-    output       [15 : 0]   arsize_data_gen,
-    output       [31 : 0]   awbase_gen,
-    output       [15 : 0]   awsize_gen,
+    output  reg  [31 : 0]   arbase_data_gen,
+    output  reg  [15 : 0]   arsize_data_gen,
+    output  reg  [31 : 0]   awbase_gen,
+    output  reg  [15 : 0]   awsize_gen,
     output  reg             rd_last_line,
 
     output       [511 : 0]  dout          ,
@@ -52,6 +52,7 @@ wire                        indices_fifo_almost_full;
 wire                        indices_fifo_empty; 
 reg                         indices_fifo_rinc;
 wire    [511 : 0]           indices_fifo_dout;
+//reg     [511 : 0]           indices_fifo_dout_reg;
 
 wire    [511 : 0]           current_indices;
 reg     [3 : 0]             current_indices_cnt;
@@ -60,10 +61,53 @@ reg                         rinc_pulse_gen; //生成单周期脉冲的状态寄�
 reg                         trans_data_reg;
 wire                        trans_data_pos;
 wire    [31 : 0]            indice_now;
+reg     [31 : 0]            indice_now_reg;
+reg     [31 : 0]            data_width_reg;
+reg     [31 : 0]            indices_width_reg;
+reg     [31 : 0]            arbase_data_reg;
+reg     [31 : 0]            awbase_dout_reg;
 
 wire    [511 : 0]           dout_rs    ;
 wire                        dout_valid_rs  ;
 wire                        dout_ready_rs  ;
+
+wire       [31 : 0]         arbase_data_gen_c;
+wire       [15 : 0]         arsize_data_gen_c;
+wire       [31 : 0]         awbase_gen_c;
+wire       [15 : 0]         awsize_gen_c;
+wire       [31 : 0]         arbase_offset_c;
+wire       [31 : 0]         awbase_offset_c;
+
+reg        [31 : 0]         arbase_offset;
+reg        [31 : 0]         awbase_offset;
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        indice_now_reg <= #0.1 32'b0;
+        data_width_reg <= #0.1 32'b0;
+        indices_width_reg <= #0.1 32'b0;
+        arbase_data_reg <= #0.1 32'b0;
+        awbase_dout_reg <= #0.1 32'b0;
+    end
+    else begin
+        indice_now_reg <= #0.1 indice_now;
+        data_width_reg <= #0.1 data_width;
+        indices_width_reg <= #0.1 indices_width;
+        arbase_data_reg <= #0.1 arbase_data;
+        awbase_dout_reg <= #0.1 awbase_dout;
+    end
+end
+
+always@(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        arbase_offset <= #0.1 32'b0;
+        awbase_offset <= #0.1 32'b0;
+    end
+    else begin
+        arbase_offset <= #0.1 arbase_offset_c;
+        awbase_offset <= #0.1 awbase_offset_c;
+    end
+end
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -123,10 +167,18 @@ end
 always @(posedge clk or negedge rst_n) begin
     if(!rst_n) begin
         addr_gen_valid <= #0.1 1'b0;
+        arbase_data_gen <= #0.1 32'b0;
+        arsize_data_gen <= #0.1 16'b0;
+        awbase_gen <= #0.1 32'b0;
+        awsize_gen <= #0.1 16'b0;
     end
     else begin
-        if(gen_status && ~rd_indices) begin
+        if(gen_status) begin
             addr_gen_valid <= #0.1 1'b1;
+            arbase_data_gen <= #0.1 arbase_data_gen_c;
+            arsize_data_gen <= #0.1 arsize_data_gen_c;
+            awbase_gen <= #0.1 awbase_gen_c;
+            awsize_gen <= #0.1 awsize_gen_c;
         end
         else begin
             addr_gen_valid <= #0.1 1'b0;
@@ -140,7 +192,7 @@ always @(posedge clk or negedge rst_n) begin
     end
     else begin
         if(gen_status) begin
-            rd_last_line <= #0.1 output_addr_cnt == indices_width - 1;
+            rd_last_line <= #0.1 output_addr_cnt == indices_width_reg - 1;
         end
         else if(comp_done) begin
             rd_last_line <= #0.1 1'b0;
@@ -154,10 +206,14 @@ end
 assign trans_data_pos = ~trans_data_reg & trans_data;
 
 assign indice_now = current_indices[current_indices_cnt*32+ : 32];
-assign arbase_data_gen = arbase_data + indice_now * (data_width << 6);
-assign arsize_data_gen = data_width;
-assign awbase_gen = awbase_dout + output_addr_cnt * (data_width << 6);
-assign awsize_gen = data_width;
+
+assign arbase_offset_c = indice_now_reg * (data_width_reg << 6);
+assign arbase_data_gen_c = arbase_data_reg + arbase_offset;
+assign arsize_data_gen_c = data_width_reg;
+
+assign awbase_offset_c = output_addr_cnt * (data_width_reg << 6);
+assign awbase_gen_c = awbase_dout_reg + awbase_offset;
+assign awsize_gen_c = data_width_reg;
 
 assign dout_rs = rd_indices ? 512'd0 : din;
 assign din_ready = rd_indices ? ~indices_fifo_almost_full : dout_ready_rs;
@@ -173,7 +229,7 @@ sync_fifo_reg
     .DSIZE          (512),
     .ASIZE          (5)
 )
-ofm_data_fifo_0
+indices_fifo_0
 (
     .clk            (clk                      ),//input 
     .rst_n          (rst_n                    ),//input 
