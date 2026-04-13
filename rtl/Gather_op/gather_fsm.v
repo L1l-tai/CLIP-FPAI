@@ -62,48 +62,97 @@ reg [2:0]   state;
 reg [2:0]   next_state;
 reg [2:0]   pre_state;
 
-always @(posedge clk or negedge rst_n) begin
-    if(!rst_n)
-        rd_done_reg <= 1'b0;
-    else if(rd_done)
-        rd_done_reg <= 1'b1;
-    else if(state == GEN_ADDR)
-        rd_done_reg <= 1'b0;
-    else
-        rd_done_reg <= rd_done_reg;
-end
+reg         wr_start_pulse_gen;
+reg         rd_start_pulse_gen;
 
 always @(posedge clk or negedge rst_n) begin
-    if(!rst_n)
-        wr_done_reg <= 1'b0;
-    else if(wr_done)
-        wr_done_reg <= 1'b1;
-    else if(state == GEN_ADDR)
-        wr_done_reg <= 1'b0;
-    else
-        wr_done_reg <= wr_done_reg;
+    if (!rst_n) begin
+        wr_start <= #0.1 1'b0;
+        wr_start_pulse_gen <= #0.1 1'b0;
+    end
+    else begin
+        if(state == WR_PIPLINE) begin
+            if(!wr_start_pulse_gen) begin
+                wr_start <= #0.1 1'b1;
+                wr_start_pulse_gen <= #0.1 1'b1;
+            end
+            else begin
+                wr_start <= #0.1 1'b0;
+                wr_start_pulse_gen <= #0.1 wr_start_pulse_gen;
+            end
+        end
+        else begin
+            wr_start_pulse_gen <= #0.1 1'b0;
+            wr_start <= #0.1 1'b0;
+        end
+    end
 end
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        arbase_data_gen_reg <= 16'd0;
-        arsize_data_gen_reg <= 16'd0;
-        awbase_gen_reg <= 16'd0;
-        awsize_gen_reg <= 16'd0;
+        rd_start <= #0.1 1'b0;
+        rd_start_pulse_gen <= #0.1 1'b0;
+    end
+    else begin
+        if(state == WR_PIPLINE || state == RD_INDICES) begin
+            if(!rd_start_pulse_gen) begin
+                rd_start <= #0.1 1'b1;
+                rd_start_pulse_gen <= #0.1 1'b1;
+            end
+            else begin
+                rd_start <= #0.1 1'b0;
+                rd_start_pulse_gen <= #0.1 rd_start_pulse_gen;
+            end
+        end
+        else begin
+            rd_start_pulse_gen <= #0.1 1'b0;
+            rd_start <= #0.1 1'b0;
+        end
+    end
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if(!rst_n)
+        rd_done_reg <= #0.1 1'b0;
+    else if(rd_done)
+        rd_done_reg <= #0.1 1'b1;
+    else if(state == GEN_ADDR)
+        rd_done_reg <= #0.1 1'b0;
+    else
+        rd_done_reg <= #0.1 rd_done_reg;
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if(!rst_n)
+        wr_done_reg <= #0.1 1'b0;
+    else if(wr_done)
+        wr_done_reg <= #0.1 1'b1;
+    else if(state == GEN_ADDR)
+        wr_done_reg <= #0.1 1'b0;
+    else
+        wr_done_reg <= #0.1 wr_done_reg;
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        arbase_data_gen_reg <= #0.1 16'd0;
+        arsize_data_gen_reg <= #0.1 16'd0;
+        awbase_gen_reg <= #0.1 16'd0;
+        awsize_gen_reg <= #0.1 16'd0;
     end
     else begin
         if(state == GEN_ADDR)
         begin
-            arbase_data_gen_reg <= arbase_data_gen;
-            arsize_data_gen_reg <= arsize_data_gen;
-            awbase_gen_reg <= awbase_gen;
-            awsize_gen_reg <= awsize_gen;
+            arbase_data_gen_reg <= #0.1 arbase_data_gen;
+            arsize_data_gen_reg <= #0.1 arsize_data_gen;
+            awbase_gen_reg <= #0.1 awbase_gen;
+            awsize_gen_reg <= #0.1 awsize_gen;
         end
         else begin
-            arbase_data_gen_reg <= arbase_data_gen_reg;
-            arsize_data_gen_reg <= arsize_data_gen_reg;
-            awbase_gen_reg <= awbase_gen_reg;
-            awsize_gen_reg <= awsize_gen_reg;
+            arbase_data_gen_reg <= #0.1 arbase_data_gen_reg;
+            arsize_data_gen_reg <= #0.1 arsize_data_gen_reg;
+            awbase_gen_reg <= #0.1 awbase_gen_reg;
+            awsize_gen_reg <= #0.1 awsize_gen_reg;
         end
     end
 end
@@ -112,12 +161,12 @@ end
 // State transition logic
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        state <= IDLE;
-        pre_state <= IDLE;
+        state <= #0.1 IDLE;
+        pre_state <= #0.1 IDLE;
     end else begin
-        state <= next_state;
+        state <= #0.1 next_state;
         if(next_state != state)
-            pre_state <= state;
+            pre_state <= #0.1 state;
     end
 end
 
@@ -132,7 +181,7 @@ always @(*) begin
         end
         RD_INDICES: begin
             if (rd_done_reg) begin
-                next_state = GEN_ADDR;
+                next_state = R_INDICES_DONE;
             end
         end
         R_INDICES_DONE: begin
@@ -160,105 +209,89 @@ end
 // Output logic
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        arbase <= 16'd0;
-        arsize <= 16'd0;
-        awbase <= 16'd0;
-        awsize <= 16'd0;
-        rd_start <= 1'b0;
-        wr_start <= 1'b0;
-        comp_done <= 1'b0;
-        rd_indices <= 1'b0;
-        trans_data <= 1'b0;
-        gen_status <= 1'd0;
+        arbase <= #0.1 16'd0;
+        arsize <= #0.1 16'd0;
+        awbase <= #0.1 16'd0;
+        awsize <= #0.1 16'd0;
+        comp_done <= #0.1 1'b0;
+        rd_indices <= #0.1 1'b0;
+        trans_data <= #0.1 1'b0;
+        gen_status <= #0.1 1'd0;
     end
     else begin
         case (state)
             IDLE: begin
                 // All control signals low
-                arbase <= 16'd0;
-                arsize <= 16'd0;
-                awbase <= 16'd0;
-                awsize <= 16'd0;
-                rd_start <= 1'b0;
-                wr_start <= 1'b0;
-                comp_done <= 1'b0;
-                rd_indices <= 1'b0;
-                trans_data <= 1'b0;
-                gen_status <= 1'd0;
+                arbase <= #0.1 16'd0;
+                arsize <= #0.1 16'd0;
+                awbase <= #0.1 16'd0;
+                awsize <= #0.1 16'd0;
+                comp_done <= #0.1 1'b0;
+                rd_indices <= #0.1 1'b0;
+                trans_data <= #0.1 1'b0;
+                gen_status <= #0.1 1'd0;
             end
             RD_INDICES: begin
                 // Set arbase and arsize pointing to indices
-                arbase <= arbase_incdces;
-                arsize <= arsize_incdces;
-                awbase <= 16'd0;
-                awsize <= 16'd0;
+                arbase <= #0.1 arbase_incdces;
+                arsize <= #0.1 arsize_incdces;
+                awbase <= #0.1 16'd0;
+                awsize <= #0.1 16'd0;
                 // Typically assert start signal here if triggering DMA
-                rd_start <= 1'b1; 
-                wr_start <= 1'b0;
-                comp_done <= 1'b0;
-                rd_indices <= 1'b1;
-                trans_data <= 1'b0;
-                gen_status <= 1'b0;
+                comp_done <= #0.1 1'b0;
+                rd_indices <= #0.1 1'b1;
+                trans_data <= #0.1 1'b0;
+                gen_status <= #0.1 1'b0;
             end
             R_INDICES_DONE: begin
-                arbase <= arbase;
-                arsize <= arsize;
-                awbase <= 16'd0;
-                awbase <= 16'd0;
-                rd_start <= 1'b0; 
-                wr_start <= 1'b0;
-                comp_done <= 1'b0;
-                rd_indices <= 1'b0;
-                trans_data <= 1'b0;
-                gen_status <= 1'b0;
+                arbase <= #0.1 arbase;
+                arsize <= #0.1 arsize;
+                awbase <= #0.1 16'd0;
+                awsize <= #0.1 16'd0;
+                comp_done <= #0.1 1'b0;
+                rd_indices <= #0.1 1'b0;
+                trans_data <= #0.1 1'b0;
+                gen_status <= #0.1 1'b0;
             end
             GEN_ADDR: begin
                 // Placeholder for next stage
-                arbase <= arbase;
-                arsize <= arsize;
-                awbase <= awbase;
-                awsize <= awsize;
-                rd_start <= 1'b0;
-                wr_start <= 1'b0;
-                comp_done <= 1'b0;
-                rd_indices <= 1'b0;
-                trans_data <= 1'b0;
-                gen_status <= 1'b1;
+                arbase <= #0.1 arbase;
+                arsize <= #0.1 arsize;
+                awbase <= #0.1 awbase;
+                awsize <= #0.1 awsize;
+                comp_done <= #0.1 1'b0;
+                rd_indices <= #0.1 1'b0;
+                trans_data <= #0.1 1'b0;
+                gen_status <= #0.1 1'b1;
             end
             WR_PIPLINE: begin 
-                arbase <= arbase_data_gen_reg;
-                arsize <= arsize_data_gen_reg;
-                awbase <= awbase_gen_reg;
-                awsize <= awsize_gen_reg;
-                rd_start <= 1'b1;
-                wr_start <= 1'b1;
-                comp_done <= 1'b0;
-                rd_indices <= 1'b0;
-                trans_data <= 1'b1;
-                gen_status <= 1'b0;
+                arbase <= #0.1 arbase_data_gen_reg;
+                arsize <= #0.1 arsize_data_gen_reg;
+                awbase <= #0.1 awbase_gen_reg;
+                awsize <= #0.1 awsize_gen_reg;
+                comp_done <= #0.1 1'b0;
+                rd_indices <= #0.1 1'b0;
+                trans_data <= #0.1 1'b1;
+                gen_status <= #0.1 1'b0;
             end
             COMP_DONE: begin
-                arbase <= 16'b0;
-                arsize <= 16'b0;
-                awbase <= 16'b0;
-                awsize <= 16'b0;
-                rd_start <= 1'b0;
-                wr_start <= 1'b0;
-                comp_done <= 1'b1;
-                rd_indices <= 1'b0;
-                trans_data <= 1'b0;
-                gen_status <= 1'b0;
+                arbase <= #0.1 16'b0;
+                arsize <= #0.1 16'b0;
+                awbase <= #0.1 16'b0;
+                awsize <= #0.1 16'b0;
+                comp_done <= #0.1 1'b1;
+                rd_indices <= #0.1 1'b0;
+                trans_data <= #0.1 1'b0;
+                gen_status <= #0.1 1'b0;
             end
             default: begin
-                arbase <= 16'b0;
-                arsize <= 16'b0;
-                awbase <= 16'b0;
-                awsize <= 16'b0;    
-                rd_start <= 1'b0;
-                wr_start <= 1'b0;
-                comp_done <= 1'b0;
-                rd_indices <= 1'b0;
-                gen_status <= 1'b0;
+                arbase <= #0.1 16'b0;
+                arsize <= #0.1 16'b0;
+                awbase <= #0.1 16'b0;
+                awsize <= #0.1 16'b0;    
+                comp_done <= #0.1 1'b0;
+                rd_indices <= #0.1 1'b0;
+                gen_status <= #0.1 1'b0;
             end
         endcase
     end

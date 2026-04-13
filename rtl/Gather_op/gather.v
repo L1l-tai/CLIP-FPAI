@@ -50,7 +50,7 @@ wire                        indices_fifo_winc;
 wire    [511 : 0]           indices_fifo_wdata;
 wire                        indices_fifo_almost_full;
 wire                        indices_fifo_empty; 
-wire                        indices_fifo_rinc;
+reg                         indices_fifo_rinc;
 wire    [511 : 0]           indices_fifo_dout;
 
 wire    [511 : 0]           current_indices;
@@ -67,105 +67,105 @@ wire                        dout_ready_rs  ;
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        trans_data_reg <= 1'b0;
+        trans_data_reg <= #0.1 1'b0;
     end
     else begin
-        trans_data_reg <= trans_data;
+        trans_data_reg <= #0.1 trans_data;
     end
 end
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        indices_fifo_rinc <= 1'b0;
-        rinc_pulse_gen    <= 1'b0;
+        indices_fifo_rinc <= #0.1 1'b0;
+        rinc_pulse_gen    <= #0.1 1'b0;
         //初始值为1，初始cnt为0时不拉高rinc
     end
     else begin 
         // 当计数器为0时，尝试生成一个周期的读取脉冲
-        if (current_indices_cnt == 0 & ~rd_indices) begin
+        if (current_indices_cnt == 0 & trans_data_reg) begin
             if (!rinc_pulse_gen) begin
-                indices_fifo_rinc <= 1'b1;
-                rinc_pulse_gen    <= 1'b1;
+                indices_fifo_rinc <= #0.1 1'b1;
+                rinc_pulse_gen    <= #0.1 1'b1;
             end
             else begin
-                indices_fifo_rinc <= 1'b0;
+                indices_fifo_rinc <= #0.1 1'b0;
             end
         end
         else begin
-            indices_fifo_rinc <= 1'b0;
-            rinc_pulse_gen    <= 1'b0; // 复位脉冲生成器，允许下一次 cnt==0 时触发
+            indices_fifo_rinc <= #0.1 1'b0;
+            rinc_pulse_gen    <= #0.1 1'b0; // 复位脉冲生成器，允许下一次 cnt==0 时触发
         end
     end    
 end
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        current_indices_cnt <= 4'd0;
-        output_addr_cnt <= 8'd0;
+        current_indices_cnt <= #0.1 4'd0;
+        output_addr_cnt <= #0.1 8'd0;
     end
     else begin
         if(trans_data_pos) begin
             //每完成一次地址生成，即进入下一个状态时，cnt加1
-            current_indices_cnt <= current_indices_cnt + 4'd1;
-            output_addr_cnt <= output_addr_cnt + 8'd1;
+            current_indices_cnt <= #0.1 current_indices_cnt + 4'd1;
+            output_addr_cnt <= #0.1 output_addr_cnt + 8'd1;
         end
         else if(comp_done) begin
-            current_indices_cnt <= 4'd0;
-            output_addr_cnt <= 8'd0;
+            current_indices_cnt <= #0.1 4'd0;
+            output_addr_cnt <= #0.1 8'd0;
         end
         else begin
-            current_indices_cnt <= current_indices_cnt;
-            output_addr_cnt <= output_addr_cnt;
+            current_indices_cnt <= #0.1 current_indices_cnt;
+            output_addr_cnt <= #0.1 output_addr_cnt;
         end
     end
 end
 
 always @(posedge clk or negedge rst_n) begin
     if(!rst_n) begin
-        addr_gen_valid <= 1'b0;
+        addr_gen_valid <= #0.1 1'b0;
     end
     else begin
         if(gen_status && ~rd_indices) begin
-            addr_gen_valid <= 1'b1;
+            addr_gen_valid <= #0.1 1'b1;
         end
         else begin
-            addr_gen_valid <= 1'b0;
+            addr_gen_valid <= #0.1 1'b0;
         end
     end
 end
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        rd_last_line <= 1'b0;
+        rd_last_line <= #0.1 1'b0;
     end
     else begin
         if(gen_status) begin
-            rd_last_line <= output_addr_cnt == indices_width - 1;
+            rd_last_line <= #0.1 output_addr_cnt == indices_width - 1;
         end
         else if(comp_done) begin
-            rd_last_line <= 1'b0;
+            rd_last_line <= #0.1 1'b0;
         end
         else begin
-            rd_last_line <= rd_last_line;
+            rd_last_line <= #0.1 rd_last_line;
         end
     end
 end
 
 assign trans_data_pos = ~trans_data_reg & trans_data;
 
-assign indice_now = current_indices[current_indices_cnt*32+31 : current_indices_cnt*32];
-assign arbase_data_gen = arbase_data + indice_now * data_width;
+assign indice_now = current_indices[current_indices_cnt*32+ : 32];
+assign arbase_data_gen = arbase_data + indice_now * (data_width << 6);
 assign arsize_data_gen = data_width;
-assign awbase_gen = awbase_dout + output_addr_cnt * data_width;
+assign awbase_gen = awbase_dout + output_addr_cnt * (data_width << 6);
 assign awsize_gen = data_width;
 
 assign dout_rs = rd_indices ? 512'd0 : din;
 assign din_ready = rd_indices ? ~indices_fifo_almost_full : dout_ready_rs;
-assign dout_valid_rs  = din_valid && din_ready;
+assign dout_valid_rs  = rd_indices ? 1'b0 : din_valid && din_ready;
 
 assign indices_fifo_winc = rd_indices & din_valid & ~indices_fifo_almost_full;
 assign indices_fifo_wdata = rd_indices ? din : 512'b0;
-assign current_indices = indices_fifo_empty ? 512'b0 : indices_fifo_dout;
+assign current_indices = (indices_fifo_empty | rd_indices) ? 512'b0 : indices_fifo_dout;
 
 sync_fifo_reg
 #(

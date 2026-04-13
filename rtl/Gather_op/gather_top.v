@@ -216,6 +216,7 @@ module gather_top(
         .trans_data      ( trans_data       ),
         .gen_status      ( gen_status       ),
         .indices_width   ( indices_width    ),
+        .data_width      ( data_width       ),
 
         .din             ( itf_rdata        ),
         .din_valid       ( itf_rvalid       ),

@@ -90,8 +90,8 @@ module dma(
         if(rst_n==1'b0)
             dma_cnt1 <= #0.1 0;
         else if(wr_start && !wr_active)
-            dma_cnt1 <= #0.1 awsize;
-        else if(aawvalid & aawready)
+            dma_cnt1 <= #0.1 awsize - 1'b1;
+        else if(aawvalid & aawready & dma_cnt1 > 0)
             dma_cnt1 <= #0.1 dma_cnt1 - 1'b1;
    end
 
@@ -102,7 +102,7 @@ module dma(
             awaddr <= #0.1 0;
         else if(wr_start)
             awaddr <= #0.1 awbase;
-        else if(aawvalid & aawready)
+        else if(aawvalid & aawready & dma_cnt1 > 0)
             awaddr <= #0.1 awaddr + 64;
    end
 
@@ -124,8 +124,8 @@ module dma(
         if(rst_n==1'b0)
             dma_cnt0 <= #0.1 0;
         else if(rd_start && !rd_active)
-            dma_cnt0 <= #0.1 arsize;
-        else if(arvalid & arready)
+            dma_cnt0 <= #0.1 arsize - 1'b1;
+        else if(arvalid & arready & (dma_cnt0 > 0))
             dma_cnt0 <= #0.1 dma_cnt0-1'b1;
    end
 
@@ -136,7 +136,7 @@ module dma(
             araddr <= #0.1 0;
         else if(rd_start)
             araddr <= #0.1 arbase;
-        else if(arvalid & arready)
+        else if(arvalid & arready & dma_cnt0 > 0)
             araddr <= #0.1 araddr + 64;
    end
 
