@@ -12,7 +12,7 @@
 // 0.5.0   2021.03.31   Changtai Lin      Modify transformation logic of Gather OP
 //================================================================================
 
-module gather_top(
+module customop_top(
 
   //所有自定义算子的接口都是相同的
   //------------ Register Access interface ------------   
@@ -70,7 +70,7 @@ module gather_top(
     wire              comp_done_cross;
     wire              comp_start_cross;
 
-    // FSM internal signals
+    //Gather FSM internal signals
     wire              rd_done;
     wire              wr_done;
     wire              addr_gen_valid;
@@ -91,6 +91,15 @@ module gather_top(
 
     wire [31:0]       indices_width;
     wire [31:0]       data_width;
+
+    //Hadamard signals
+    wire              comp_start_hd;
+    wire [31:0]       arbase_hd;
+    wire [31:0]       awbase_hd;
+    wire [31:0]       wrsize_hd;
+    wire              comp_done_hd;  
+    wire [31:0]       hd_data_width;
+    wire              hd_cal_percision; //0: int8, 1: fp16
  
   /*-------------Regs are controled by runtime application------------*/
   reg_ctrl   U_reg_ctrl(   
@@ -113,10 +122,13 @@ module gather_top(
           .rbase1         ( arbase_incdces   ),
           .rsize1         ( arsize_incdces   ),
           .rbase2         ( arbase_data      ),
-          //.rsize2         ( arsize_data      ),
-
           .wbase1         ( awbase_dout      ),
-          //.wsize1         ( awsize_dout      ),
+
+          .comp_start_hd  ( comp_start_hd    ) ,
+          .rbase_hd       ( arbase_hd        ) ,
+          .wbase_hd       ( awbase_hd        ) ,
+          .wrsize_hd      ( wrsize_hd        ) ,
+          .comp_done_hd   ( comp_done_hd     ) ,
           
           .rfu_rreg0     ( 32'd0            ),       //read reg;                                            
           .rfu_rreg1     ( 32'd0            ),                                              
@@ -131,8 +143,8 @@ module gather_top(
    
           .rfu_wreg0     ( indices_width    ),       //wirte reg;                                      
           .rfu_wreg1     ( data_width       ),                                              
-          .rfu_wreg2     (                  ),                                              
-          .rfu_wreg3     (                  ),                                              
+          .rfu_wreg2     ( hd_data_width    ),                                              
+          .rfu_wreg3     ( hd_cal_percision ),                                              
           .rfu_wreg4     (                  ),                                              
           .rfu_wreg5     (                  ),                                              
           .rfu_wreg6     (                  ),                                              
