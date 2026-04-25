@@ -23,9 +23,9 @@ module hadamard_addr_gen(
     input        [31 : 0]   awbase_hd     ,
     
     // 新增：总迭代次数/行数，用于判断 last_line
-    input        [15 : 0]   fwht_num      ,
+    //input        [15 : 0]   fwht_num      ,
 
-    output  reg             hd_addr_gen_valid , // 修正：统一信号名
+    output  reg             hd_addr_gen_valid , 
     output  reg  [31 : 0]   arbase_hd_gen,
     output  reg  [15 : 0]   arsize_hd_gen,
     output  reg  [31 : 0]   awbase_hd_gen,
@@ -39,8 +39,8 @@ module hadamard_addr_gen(
     input                   rst_n
 );
 
-localparam FWHT_WIDTH = 4; // 64 *32 / 512 = 4
-localparam FWHT_SHIFT = 8; // 64 * (32 / 4) = 256 BYTE
+localparam FWHT_WIDTH = 2; // 64 * 16 / 512 = 2, FP16每次迭代2个512bit块
+localparam FWHT_SHIFT = 7; // 每次迭代地址偏移128字节 (2^7)
 
 reg     [15 : 0]            hd_rd_cnt;
 reg     [15 : 0]            hd_wr_cnt;
@@ -56,7 +56,7 @@ wire       [15 : 0]         awsize_hd_gen_c;
 wire       [31 : 0]         arbase_offset_c;
 wire       [31 : 0]         awbase_offset_c;
 
-
+wire       [15 : 0]         wfht_num;
 wire                        rd_pos;
 wire                        wr_pos;
 
@@ -164,6 +164,8 @@ always @(posedge clk or negedge rst_n) begin
         end
     end
 end
+
+assign wfht_num = wrsize_hd / FWHT_WIDTH;
 
 assign rd_pos = ~trans_status_reg[0] & trans_status[0];
 assign wr_pos = ~trans_status_reg[1] & trans_status[1];

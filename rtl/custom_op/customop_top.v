@@ -71,8 +71,6 @@ module customop_top(
     wire              comp_start_cross;
 
     //Gather FSM internal signals
-    wire              rd_done;
-    wire              wr_done;
     wire              addr_gen_valid;
     wire [31:0]       arbase_data_gen;
     wire [15:0]       arsize_data_gen;
@@ -91,16 +89,80 @@ module customop_top(
 
     wire [31:0]       indices_width;
     wire [31:0]       data_width;
+    wire              din_ready;
 
     //Hadamard signals
     wire              comp_start_hd;
     wire [31:0]       arbase_hd;
     wire [31:0]       awbase_hd;
     wire [31:0]       wrsize_hd;
-    wire              comp_done_hd;  
+    wire              comp_done_hd;
     wire [31:0]       hd_data_width;
     wire              hd_cal_percision; //0: int8, 1: fp16
- 
+    wire [15:0]       fwht_num;
+    wire              hd_din_ready;
+
+    //Hadamard FSM signals
+    wire [15:0]       arsize_hd_fsm;
+    wire [15:0]       awsize_hd_fsm;
+    wire              rd_start_hd;
+    wire              wr_start_hd;
+    wire [1:0]        trans_status_hd;
+    wire              gen_status_hd;
+    wire              fwht_status_hd;
+    wire              fwht_done_hd;
+
+    //Hadamard addr_gen signals
+    wire              hd_addr_gen_valid;
+    wire [31:0]       arbase_hd_gen;
+    wire [15:0]       arsize_hd_gen;
+    wire [31:0]       awbase_hd_gen;
+    wire [15:0]       awsize_hd_gen;
+    wire              hd_first_line;
+    wire              hd_last_line;
+
+    //Arbiter signals
+    wire [31:0]       arb_arbase_gather;
+    wire [15:0]       arb_arsize_gather;
+    wire [31:0]       arb_awbase_gather;
+    wire [15:0]       arb_awsize_gather;
+    wire              arb_rd_start_gather;
+    wire              arb_wr_start_gather;
+    wire [511:0]      arb_comp_data_gather;
+    wire              arb_data_valid_gather;
+    wire              arb_data_ready_gather;
+    wire              arb_rd_done_gather;
+    wire              arb_wr_done_gather;
+
+    wire [31:0]       arb_arbase_hd;
+    wire [15:0]       arb_arsize_hd;
+    wire [31:0]       arb_awbase_hd;
+    wire [15:0]       arb_awsize_hd;
+    wire              arb_rd_start_hd;
+    wire              arb_wr_start_hd;
+    wire [511:0]      arb_dout_hd;
+    wire              arb_dout_valid_hd;
+    wire              arb_dout_ready_hd;
+    wire              arb_rd_done_hd;
+    wire              arb_wr_done_hd;
+
+    // Hadamard to arbiter signals
+    wire [511:0]      hd_dout;
+    wire              hd_dout_valid;
+    wire              hd_dout_ready;
+
+    wire [31:0]       itf_arbase_arb;
+    wire [15:0]       itf_arsize_arb;
+    wire [31:0]       itf_awbase_arb;
+    wire [15:0]       itf_awsize_arb;
+    wire              itf_rd_start_arb;
+    wire              itf_wr_start_arb;
+    wire [511:0]      itf_comp_data_arb;
+    wire              itf_data_valid_arb;
+    wire              itf_data_ready_arb;
+    wire              itf_rd_done_arb;
+    wire              itf_wr_done_arb;
+
   /*-------------Regs are controled by runtime application------------*/
   reg_ctrl   U_reg_ctrl(   
           .ra_awaddr     ( itf_ra_awaddr[17:2]    ),  
@@ -159,8 +221,8 @@ module customop_top(
 
    // Instantiate Gather FSM
    gather_fsm U_gather_fsm (
-       .rd_done          ( rd_done          ), // input
-       .wr_done          ( wr_done          ), // input
+       .rd_done          ( arb_rd_done_gather ), // input - from arbiter
+       .wr_done          ( arb_wr_done_gather ), // input - from arbiter
        .comp_start       ( comp_start_cross ), // input
        
        .arbase_incdces   ( arbase_incdces   ), // input
@@ -190,38 +252,87 @@ module customop_top(
 
    dma    U_dma(
 
-       .arbase           ( arbase           ), // input
-       .arsize           ( arsize           ), // input
-     
-       .awbase           ( awbase           ), // input
-       .awsize           ( awsize           ), // input
+       .arbase           ( itf_arbase_arb        ), // input
+       .arsize           ( itf_arsize_arb        ), // input
+       .awbase           ( itf_awbase_arb        ), // input
+       .awsize           ( itf_awsize_arb        ), // input
                          
        .araddr           ( itf_araddr       ), // output
        .arvalid          ( itf_arvalid      ), // output
        .arready          ( itf_arready      ), // input
 
-       .comp_data        ( comp_data        ), // input
-       .data_valid       ( data_valid       ), // input
-       .data_ready       ( data_ready       ), // output
+       .comp_data        ( itf_comp_data_arb     ), // input
+       .data_valid       ( itf_data_valid_arb    ), // input
+       .data_ready       ( itf_data_ready_arb    ), // output
                          
        .awaddr           ( itf_awaddr       ), // output
        .awdata           ( itf_awdata       ), // output
        .awvalid          ( itf_awvalid      ), // output
        .awready          ( itf_awready      ), // input
 
-       .rd_start         ( rd_start         ), // input
-       .wr_start         ( wr_start         ), // input
+       .rd_start         ( itf_rd_start_arb      ), // input
+       .wr_start         ( itf_wr_start_arb      ), // input
 
-       .rd_done          ( rd_done          ), // output
-       .wr_done          ( wr_done          ), // output
-
-      // .comp_start       ( comp_start_cross ),
+       .rd_done          ( itf_rd_done_arb       ), // output
+       .wr_done          ( itf_wr_done_arb       ), // output
 
        .clk              ( clk              ), // input
        .rst_n            ( rst_n_1          )  // input
   );
 
+    // Arbiter instantiation
+  arbiter U_arbiter (
+      // Gather DMA interface
+      .gather_arbase      ( arbase              ),
+      .gather_arsize      ( arsize              ),
+      .gather_awbase      ( awbase              ),
+      .gather_awsize      ( awsize              ),
+      .gather_rd_start    ( rd_start            ),
+      .gather_wr_start    ( wr_start            ),
+      .gather_din_ready   ( din_ready           ),
+      .gather_comp_data   ( comp_data           ),
+      .gather_data_valid  ( data_valid          ),
+      .gather_data_ready  ( data_ready          ),
+      .gather_rd_done     ( arb_rd_done_gather  ),
+      .gather_wr_done     ( arb_wr_done_gather  ),
+      .gather_comp_done   ( comp_done           ),
 
+      // Hadamard DMA interface
+      .hadamard_arbase    ( arbase_hd           ),
+      .hadamard_arsize    ( arsize_hd_fsm       ),
+      .hadamard_awbase    ( awbase_hd           ),
+      .hadamard_awsize    ( awsize_hd_fsm       ),
+      .hadamard_rd_start  ( rd_start_hd         ),
+      .hadamard_wr_start  ( wr_start_hd         ),
+      .hadamard_din_ready ( hd_din_ready        ),
+      .hadamard_dout      ( hd_dout           ),
+      .hadamard_dout_valid( hd_dout_valid     ),
+      .hadamard_dout_ready( hd_dout_ready     ),
+      .hadamard_rd_done   ( arb_rd_done_hd      ),
+      .hadamard_wr_done   ( arb_wr_done_hd      ),
+      .hadamard_comp_done ( comp_done_hd        ),
+
+      // To DMA interface
+      .itf_arbase         ( itf_arbase_arb      ),
+      .itf_arsize         ( itf_arsize_arb      ),
+      .itf_awbase         ( itf_awbase_arb      ),
+      .itf_awsize         ( itf_awsize_arb      ),
+      .itf_rd_start       ( itf_rd_start_arb    ),
+      .itf_wr_start       ( itf_wr_start_arb    ),
+      .itf_comp_data      ( itf_comp_data_arb   ),
+      .itf_data_valid     ( itf_data_valid_arb  ),
+      .itf_data_ready     ( itf_data_ready_arb  ),
+      .itf_rd_done        ( itf_rd_done_arb     ),
+      .itf_wr_done        ( itf_wr_done_arb     ),
+      .itf_rready         ( itf_rready          ),
+
+      // Control signals
+      .gather_comp_start  ( comp_start_cross    ),
+      .hadamard_comp_start( comp_start_hd       ),
+
+      .clk                ( clk                 ),
+      .rst_n              ( rst_n_1             )
+  );
    
   gather    U_gather(
         .rd_indices      ( rd_indices       ),
@@ -232,7 +343,7 @@ module customop_top(
 
         .din             ( itf_rdata        ),
         .din_valid       ( itf_rvalid       ),
-        .din_ready       ( itf_rready       ),
+        .din_ready       ( din_ready        ),
 
         .arbase_data     ( arbase_data      ),
         //.arsize_data     ( arsize_data      ),
@@ -272,11 +383,90 @@ module customop_top(
         .a2      (  comp_start_cross ),
         .clk2    (  clk              ),
         .rst2    (  ~rst_n_1         ),
-     
+
         .rdy1    (                   ),
         .a1      (  comp_start       ),
         .clk1    (  ra_clk           ),
         .rst1    (  ~ra_rst_n_1      )
+  );
+
+  // ============================================================
+  // Hadamard Module Instances
+  // ============================================================
+
+  // Hadamard FSM
+  hadamard_fsm U_hadamard_fsm (
+      .rd_done          ( arb_rd_done_hd     ), // input - from arbiter
+      .wr_done          ( arb_wr_done_hd     ), // input - from arbiter
+      .hd_comp_start    ( comp_start_hd     ), // input - from reg_ctrl
+      .arbase_hd_gen    ( arbase_hd_gen    ), // input
+      .arsize_hd_gen    ( arsize_hd_gen    ), // input
+      .awbase_hd_gen    ( awbase_hd_gen    ), // input
+      .awsize_hd_gen    ( awsize_hd_gen    ), // input
+      .hd_addr_gen_valid( hd_addr_gen_valid), // input
+      .hd_first_line    ( hd_first_line    ), // input
+      .hd_last_line     ( hd_last_line     ), // input
+      .fwht_done        ( fwht_done_hd     ), // input - from hadamard core
+
+      .arbase           ( arbase_hd        ), // output
+      .arsize           ( arsize_hd_fsm    ), // output
+      .awbase           ( awbase_hd        ), // output
+      .awsize           ( awsize_hd_fsm    ), // output
+      .rd_start         ( rd_start_hd       ), // output
+      .wr_start         ( wr_start_hd      ), // output
+      .comp_done        ( comp_done_hd     ), // output
+      .trans_status     ( trans_status_hd  ), // output [1:0]
+      .gen_status       ( gen_status_hd    ), // output
+      .fwht_status      ( fwht_status_hd   ), // output
+
+      .clk              ( clk              ),
+      .rst_n            ( rst_n_1          )
+  );
+
+  // Hadamard Address Generator
+  hadamard_addr_gen U_hadamard_addr_gen (
+      .trans_status     ( trans_status_hd  ), // input [1:0]
+      .gen_status       ( gen_status_hd    ), // input
+      .hd_data_width    ( hd_data_width    ), // input [31:0]
+      .arbase_hd        ( arbase_hd         ), // input [31:0]
+      .wrsize_hd        ( wrsize_hd         ), // input [31:0]
+      .awbase_hd        ( awbase_hd         ), // input [31:0]
+      //.fwht_num         ( fwht_num          ), // input [15:0]
+
+      .hd_addr_gen_valid( hd_addr_gen_valid ), // output
+      .arbase_hd_gen   ( arbase_hd_gen     ), // output [31:0]
+      .arsize_hd_gen   ( arsize_hd_gen     ), // output [15:0]
+      .awbase_hd_gen   ( awbase_hd_gen     ), // output [31:0]
+      .awsize_hd_gen   ( awsize_hd_gen     ), // output [15:0]
+      .hd_first_line   ( hd_first_line     ), // output
+      .hd_last_line    ( hd_last_line      ), // output
+
+      .comp_done        ( comp_done_hd      ), // input
+
+      .clk              ( clk               ),
+      .rst_n            ( rst_n_1           )
+  );
+
+  // Hadamard Core (FWHT)
+  hadamard U_hadamard (
+      .gen_status       ( gen_status_hd    ), // input
+      .fwht_status      ( fwht_status_hd   ), // input
+      .trans_status     ( trans_status_hd  ), // input [1:0]
+      .cal_percision    ( hd_cal_percision ), // input
+
+      .din              ( itf_rdata         ), // input [511:0] - 直接连接DMA读数据
+      .din_valid        ( itf_rvalid        ), // input
+      .din_ready        ( hd_din_ready      ), // output
+
+      .dout             ( hd_dout           ), // output [511:0] - 通过arbiter仲裁
+      .dout_valid       ( hd_dout_valid     ), // output
+      .dout_ready       ( hd_dout_ready     ), // input
+
+      .comp_done        ( comp_done_hd      ), // input
+      .fwht_done        ( fwht_done_hd      ), // output
+
+      .clk              ( clk               ),
+      .rst_n            ( rst_n_1           )
   );
 
   always@(posedge clk or negedge ra_rst_n) begin
