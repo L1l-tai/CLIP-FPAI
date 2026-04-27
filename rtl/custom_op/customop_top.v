@@ -103,6 +103,8 @@ module customop_top(
     wire              hd_din_ready;
 
     //Hadamard FSM signals
+    wire [31:0]       arbase_hd_fsm;
+    wire [31:0]       awbase_hd_fsm;
     wire [15:0]       arsize_hd_fsm;
     wire [15:0]       awsize_hd_fsm;
     wire              rd_start_hd;
@@ -298,9 +300,9 @@ module customop_top(
       .gather_comp_done   ( comp_done           ),
 
       // Hadamard DMA interface
-      .hadamard_arbase    ( arbase_hd           ),
+      .hadamard_arbase    ( arbase_hd_fsm       ),
       .hadamard_arsize    ( arsize_hd_fsm       ),
-      .hadamard_awbase    ( awbase_hd           ),
+      .hadamard_awbase    ( awbase_hd_fsm       ),
       .hadamard_awsize    ( awsize_hd_fsm       ),
       .hadamard_rd_start  ( rd_start_hd         ),
       .hadamard_wr_start  ( wr_start_hd         ),
@@ -408,9 +410,9 @@ module customop_top(
       .hd_last_line     ( hd_last_line     ), // input
       .fwht_done        ( fwht_done_hd     ), // input - from hadamard core
 
-      .arbase           ( arbase_hd        ), // output
+      .arbase           ( arbase_hd_fsm    ), // output
       .arsize           ( arsize_hd_fsm    ), // output
-      .awbase           ( awbase_hd        ), // output
+      .awbase           ( awbase_hd_fsm    ), // output
       .awsize           ( awsize_hd_fsm    ), // output
       .rd_start         ( rd_start_hd       ), // output
       .wr_start         ( wr_start_hd      ), // output
@@ -452,6 +454,7 @@ module customop_top(
       .gen_status       ( gen_status_hd    ), // input
       .fwht_status      ( fwht_status_hd   ), // input
       .trans_status     ( trans_status_hd  ), // input [1:0]
+      .wr_done          ( arb_wr_done_hd   ),
       .cal_percision    ( hd_cal_percision ), // input
 
       .din              ( itf_rdata         ), // input [511:0] - 直接连接DMA读数据

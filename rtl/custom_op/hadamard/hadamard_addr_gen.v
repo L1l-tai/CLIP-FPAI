@@ -56,7 +56,7 @@ wire       [15 : 0]         awsize_hd_gen_c;
 wire       [31 : 0]         arbase_offset_c;
 wire       [31 : 0]         awbase_offset_c;
 
-wire       [15 : 0]         wfht_num;
+wire       [15 : 0]         fwht_num;
 wire                        rd_pos;
 wire                        wr_pos;
 
@@ -165,7 +165,7 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 
-assign wfht_num = wrsize_hd / FWHT_WIDTH;
+assign fwht_num = wrsize_hd / FWHT_WIDTH;
 
 assign rd_pos = ~trans_status_reg[0] & trans_status[0];
 assign wr_pos = ~trans_status_reg[1] & trans_status[1];

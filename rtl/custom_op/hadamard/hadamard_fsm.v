@@ -19,9 +19,9 @@ module hadamard_fsm (
 
     // 只需要对读地址进行仲裁
     input [31:0]        arbase_hd_gen,
-    input [31:0]        arsize_hd_gen,
+    input [15:0]        arsize_hd_gen,
     input [31:0]        awbase_hd_gen,
-    input [31:0]        awsize_hd_gen,
+    input [15:0]        awsize_hd_gen,
     input               hd_addr_gen_valid,
     // 读最后一行数据时拉高
     input               hd_first_line,
@@ -57,9 +57,9 @@ localparam  COMP_DONE = 3'd6    ;
 reg         rd_done_reg;
 reg         wr_done_reg;
 reg [31:0]  arbase_hd_gen_reg;
-reg [31:0]  arsize_hd_gen_reg;
+reg [15:0]  arsize_hd_gen_reg;
 reg [31:0]  awbase_hd_gen_reg;
-reg [31:0]  awsize_hd_gen_reg;
+reg [15:0]  awsize_hd_gen_reg;
 
 reg [2:0]   state;
 reg [2:0]   next_state;

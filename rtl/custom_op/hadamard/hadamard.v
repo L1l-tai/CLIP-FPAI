@@ -16,6 +16,7 @@ module hadamard (
     input                   gen_status    ,
     input                   fwht_status   ,
     input        [1 : 0]    trans_status  ,
+    input                   wr_done       ,
     input                   cal_percision ,
 
     input        [511 : 0]  din           ,
@@ -93,8 +94,8 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 
-// 支持int8和fp16两种格式的计�?
-// 写入用于FWHT的REG，INT8数据写入�?8�?
+// 支持int8和fp16两种格式的计�?
+// 写入用于FWHT的REG，INT8数据写入�?8�?
 genvar i;
 genvar j;
 
@@ -142,7 +143,7 @@ end
 
 endgenerate
 
-//6级FWHT共需�?6个stage，stage0为输�?
+//6级FWHT共需�?6个stage，stage0为输�?
 wire [15:0]         stage0   [63:0];
 wire [15:0]         stage1   [63:0];
 wire [15:0]         stage2   [63:0];
@@ -174,7 +175,7 @@ always @(posedge clk or negedge rst_n) begin
         if(w_reg_valid_pos) begin
            result_valid <= #0.1 1'b1; 
         end
-        else if(gen_status) begin
+        else if(wr_done) begin
             result_valid <= #0.1 1'b0;
         end
         else begin
@@ -434,16 +435,16 @@ assign dout_rs = cal_percision ? (wr_cnt == 0 ? dout_lo : dout_hi) : dout_int8;
 assign dout_valid_rs  = result_valid && trans_status[1];
 assign fwht_done = result_valid;
 
-// 实例�? AVR 寄存器切片模�? (avr_rs)
-// 作用：隔离组合�?�辑路径，改善时序，并提供背压处理能�?
+// 实例�? AVR 寄存器切片模�? (avr_rs)
+// 作用：隔离组合�?�辑路径，改善时序，并提供背压处理能�?
 avr_rs #(.DW(512)) U_avr_rs(
-    .m_data      ( dout_rs         ),//I - 主接口数据输�?
-    .m_valid     ( dout_valid_rs   ),//I - 主接口有效信�?
-    .m_ready     ( dout_ready_rs   ),//O - 主接口就绪信�?
+    .m_data      ( dout_rs         ),//I - 主接口数据输�?
+    .m_valid     ( dout_valid_rs   ),//I - 主接口有效信�?
+    .m_ready     ( dout_ready_rs   ),//O - 主接口就绪信�?
 
-    .s_data      ( dout            ),//O - 从接口数据输�?
-    .s_valid     ( dout_valid      ),//O - 从接口有效信�?
-    .s_ready     ( dout_ready      ),//I - 从接口就绪信�?
+    .s_data      ( dout            ),//O - 从接口数据输�?
+    .s_valid     ( dout_valid      ),//O - 从接口有效信�?
+    .s_ready     ( dout_ready      ),//I - 从接口就绪信�?
 
     .clk         ( clk            ),
     .rst_n       ( rst_n          )
