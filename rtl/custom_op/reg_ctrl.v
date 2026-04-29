@@ -43,6 +43,15 @@ module reg_ctrl(
     output reg    [   31 : 0]   wrsize_hd        ,
     input                       comp_done_hd     ,
 
+    output reg    [   15 : 0]   comp_start_rs    ,
+    output reg    [   31 : 0]   rbase_rs         ,
+    output reg    [   31 : 0]   wbase_rs         ,
+    output reg    [   15 : 0]   rwidth_rs        ,
+    output reg    [   15 : 0]   rheight_rs       ,
+    output reg    [   15 : 0]   wwidth_rs        ,
+    output reg    [   15 : 0]   wheight_rs       ,
+    input                       comp_done_rs     ,
+
     input         [   31 : 0]   rfu_rreg0        ,                                              
     input         [   31 : 0]   rfu_rreg1        ,                                              
     input         [   31 : 0]   rfu_rreg2        ,                                              
@@ -109,13 +118,23 @@ module reg_ctrl(
     localparam HD_WRSIZE_ADDR  = 16'h34;
     localparam HD_COMP_DONE_ADDR = 16'h40;
 
-    localparam HD_VERSION       = 32'h20260421; 
+    localparam HD_VERSION       = 32'h20260421;
+
+    localparam RS_COMP_START_ADDR   = 16'h41;
+    localparam RS_RBASE_ADDR        = 16'h42;
+    localparam RS_WBASE_ADDR        = 16'h43;
+    localparam RS_RSIZE_ADDR        = 16'h44;
+    localparam RS_WSIZE_ADDR        = 16'h45;
+    localparam RS_COMP_DONE_ADDR    = 16'h50;
+
+    localparam RS_VERSION          = 32'h20260427;
 
 
     wire              ra_awevent      ;
     reg   [31 : 0]    debug_reg       ;
     reg               comp_done_reg   ;
-    reg               comp_done_hd_reg;  
+    reg               comp_done_hd_reg;
+    reg               comp_done_rs_reg;
 
     assign ra_awready = 1'b1;
     assign ra_arready = ra_rvalid==1'b0;
@@ -211,6 +230,55 @@ module reg_ctrl(
        else if(ra_awevent && ra_awaddr==HD_WRSIZE_ADDR)begin
             wrsize_hd <= #0.1 ra_awdata[31:0];
             //rsize2 <= #0.1 ra_awdata[31:16];
+       end
+    end
+
+    always@(posedge clk or negedge rst_n) begin
+        if(rst_n==1'b0)
+            comp_start_rs <= #0.1 0;
+        else if(comp_start_rs==1'b1)
+            comp_start_rs <= #0.1 0;
+        else if(ra_awevent && ra_awaddr==RS_COMP_START_ADDR)
+            comp_start_rs <= #0.1 ra_awdata[0];
+    end
+
+    always@(posedge clk or negedge rst_n) begin
+       if(rst_n==1'b0)begin
+            rbase_rs <= #0.1 0;
+       end
+       else if(ra_awevent && ra_awaddr==RS_RBASE_ADDR)begin
+            rbase_rs <= #0.1 ra_awdata;
+       end
+    end
+
+    always@(posedge clk or negedge rst_n) begin
+       if(rst_n==1'b0)begin
+            wbase_rs <= #0.1 0;
+       end
+       else if(ra_awevent && ra_awaddr==RS_WBASE_ADDR)begin
+            wbase_rs <= #0.1 ra_awdata;
+       end
+    end
+
+    always@(posedge clk or negedge rst_n) begin
+       if(rst_n==1'b0)begin
+            rwidth_rs <= #0.1 16'd0;
+            rheight_rs <= #0.1 16'd0;
+       end
+       else if(ra_awevent && ra_awaddr==RS_RSIZE_ADDR)begin
+            rwidth_rs <= #0.1 ra_awdata[31:16];
+            rheight_rs <= #0.1 ra_awdata[15:0];
+       end
+    end
+
+    always@(posedge clk or negedge rst_n) begin
+       if(rst_n==1'b0)begin
+            wwidth_rs <= #0.1 16'd0;
+            wheight_rs <= #0.1 16'd0;
+       end
+       else if(ra_awevent && ra_awaddr==RS_WSIZE_ADDR)begin
+            wwidth_rs <= #0.1 ra_awdata[31:16];
+            wheight_rs <= #0.1 ra_awdata[15:0];
        end
     end
 
@@ -314,6 +382,15 @@ module reg_ctrl(
 
     always@(posedge clk or negedge rst_n) begin
         if(rst_n==1'b0)
+            comp_done_rs_reg <= #0.1 0;
+        else if(comp_start_rs==1'b1)
+            comp_done_rs_reg <= #0.1 0;
+        else if(comp_done_rs)
+            comp_done_rs_reg <= #0.1 1;
+    end
+
+    always@(posedge clk or negedge rst_n) begin
+        if(rst_n==1'b0)
             ra_rdata <= #0.1 0;
         else if(ra_arvalid && ra_arready) begin
             case(ra_araddr)
@@ -321,6 +398,7 @@ module reg_ctrl(
                 DEBUG_REG_ADDR    : ra_rdata <= #0.1 debug_reg;
                 COMPUTE_DONE_ADDR : ra_rdata <= #0.1 {31'd0,comp_done_reg};
                 HD_COMP_DONE_ADDR : ra_rdata <= #0.1 {31'd0,comp_done_hd_reg};
+                RS_COMP_DONE_ADDR : ra_rdata <= #0.1 {31'd0,comp_done_rs_reg};
                 RFU_RADDR0        : ra_rdata <= #0.1 rfu_rreg0;
                 RFU_RADDR1        : ra_rdata <= #0.1 rfu_rreg1;
                 RFU_RADDR2        : ra_rdata <= #0.1 rfu_rreg2;               
@@ -333,6 +411,7 @@ module reg_ctrl(
                 RFU_RADDR9        : ra_rdata <= #0.1 rfu_rreg9;
                 16'h30            : ra_rdata <= #0.1 GATHER_VERSION;
                 16'h60            : ra_rdata <= #0.1 HD_VERSION;
+                16'h70            : ra_rdata <= #0.1 RS_VERSION;
               
                 default : ra_rdata <= #0.1 32'hFFFFFFFF;
             endcase

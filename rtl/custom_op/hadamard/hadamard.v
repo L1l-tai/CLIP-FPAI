@@ -94,8 +94,8 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 
-// 支持int8和fp16两种格式的计�?
-// 写入用于FWHT的REG，INT8数据写入�?8�?
+// 支持int8和fp16两种格式的计算
+// 写入用于FWHT的REG，INT8数据写入低8位
 genvar i;
 genvar j;
 
@@ -143,7 +143,7 @@ end
 
 endgenerate
 
-//6级FWHT共需�?6个stage，stage0为输�?
+// 6级FWHT共需要6个stage，stage0为输入
 wire [15:0]         stage0   [63:0];
 wire [15:0]         stage1   [63:0];
 wire [15:0]         stage2   [63:0];
@@ -435,16 +435,16 @@ assign dout_rs = cal_percision ? (wr_cnt == 0 ? dout_lo : dout_hi) : dout_int8;
 assign dout_valid_rs  = result_valid && trans_status[1];
 assign fwht_done = result_valid;
 
-// 实例�? AVR 寄存器切片模�? (avr_rs)
-// 作用：隔离组合�?�辑路径，改善时序，并提供背压处理能�?
+// 实例化 AVR 寄存器切片模块 (avr_rs)
+// 作用：隔离组合逻辑路径，改善时序，并提供背压处理能力
 avr_rs #(.DW(512)) U_avr_rs(
-    .m_data      ( dout_rs         ),//I - 主接口数据输�?
-    .m_valid     ( dout_valid_rs   ),//I - 主接口有效信�?
-    .m_ready     ( dout_ready_rs   ),//O - 主接口就绪信�?
+    .m_data      ( dout_rs         ),// I - 主接口数据输入
+    .m_valid     ( dout_valid_rs   ),// I - 主接口有效信号
+    .m_ready     ( dout_ready_rs   ),// O - 主接口就绪信号
 
-    .s_data      ( dout            ),//O - 从接口数据输�?
-    .s_valid     ( dout_valid      ),//O - 从接口有效信�?
-    .s_ready     ( dout_ready      ),//I - 从接口就绪信�?
+    .s_data      ( dout            ),// O - 从接口数据输出
+    .s_valid     ( dout_valid      ),// O - 从接口有效信号
+    .s_ready     ( dout_ready      ),// I - 从接口就绪信号
 
     .clk         ( clk            ),
     .rst_n       ( rst_n          )

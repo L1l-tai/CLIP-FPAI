@@ -123,6 +123,55 @@ module customop_top(
     wire              hd_first_line;
     wire              hd_last_line;
 
+    //Resize signals (from reg_ctrl)
+    wire              comp_start_rs;
+    wire [31:0]       rbase_rs;
+    wire [15:0]       rwidth_rs;
+    wire [15:0]       rheight_rs;
+    wire [31:0]       wbase_rs;
+    wire [15:0]       wwidth_rs;
+    wire [15:0]       wheight_rs;
+    wire              comp_done_rs;
+
+    //Resize FSM signals
+    wire [31:0]       arbase_rs_fsm;
+    wire [31:0]       awbase_rs_fsm;
+    wire [15:0]       arsize_rs_fsm;
+    wire [15:0]       awsize_rs_fsm;
+    wire              rd_start_rs;
+    wire              wr_start_rs;
+    wire              rd_second_rs;
+    wire [1:0]        trans_status_rs;
+    wire              gen_status_rs;
+    wire              axis_pre_cal_rs;
+    wire              axis_cal_status_rs;
+    wire              resize_status_rs;
+
+    //Resize axis signals
+    wire [7:0]        data_valid_axis;
+    wire [255:0]      x_delta_axis;
+    wire [7:0]        y_delta_axis;
+    wire [15:0]       y_bias_axis;
+    wire              axis_done_axis;
+    wire              axis_pre_cal_done_axis;
+
+    //Resize addr_gen signals
+    wire              rs_addr_gen_valid;
+    wire [31:0]       arbase_rs_gen;
+    wire [31:0]       arbase_rs_gen_2;
+    wire [15:0]       arsize_rs_gen;
+    wire [31:0]       awbase_rs_gen;
+    wire [15:0]       awsize_rs_gen;
+    wire              rs_first_line;
+    wire              rs_last_line;
+
+    //Resize module signals
+    wire [511:0]      rs_dout;
+    wire              rs_dout_valid;
+    wire              rs_dout_ready;
+    wire              rs_din_ready;
+    wire              rs_resize_done;
+
     //Arbiter signals
     wire [31:0]       arb_arbase_gather;
     wire [15:0]       arb_arsize_gather;
@@ -147,6 +196,18 @@ module customop_top(
     wire              arb_dout_ready_hd;
     wire              arb_rd_done_hd;
     wire              arb_wr_done_hd;
+
+    wire [31:0]       arb_arbase_rs;
+    wire [15:0]       arb_arsize_rs;
+    wire [31:0]       arb_awbase_rs;
+    wire [15:0]       arb_awsize_rs;
+    wire              arb_rd_start_rs;
+    wire              arb_wr_start_rs;
+    wire [511:0]      arb_dout_rs;
+    wire              arb_dout_valid_rs;
+    wire              arb_dout_ready_rs;
+    wire              arb_rd_done_rs;
+    wire              arb_wr_done_rs;
 
     // Hadamard to arbiter signals
     wire [511:0]      hd_dout;
@@ -193,6 +254,15 @@ module customop_top(
           .wbase_hd       ( awbase_hd        ) ,
           .wrsize_hd      ( wrsize_hd        ) ,
           .comp_done_hd   ( comp_done_hd     ) ,
+
+          .comp_start_rs  ( comp_start_rs    ) ,
+          .rbase_rs       ( rbase_rs         ) ,
+          .rwidth_rs      ( rwidth_rs        ) ,
+          .rheight_rs     ( rheight_rs       ) ,
+          .wbase_rs       ( wbase_rs         ) ,
+          .wwidth_rs      ( wwidth_rs        ) ,
+          .wheight_rs     ( wheight_rs       ) ,
+          .comp_done_rs   ( comp_done_rs     ) ,
           
           .rfu_rreg0     ( 32'd0            ),       //read reg;                                            
           .rfu_rreg1     ( 32'd0            ),                                              
@@ -314,6 +384,20 @@ module customop_top(
       .hadamard_wr_done   ( arb_wr_done_hd      ),
       .hadamard_comp_done ( comp_done_hd        ),
 
+      // Resize DMA interface
+      .resize_arbase      ( arbase_rs_fsm       ),
+      .resize_arsize      ( arsize_rs_fsm       ),
+      .resize_awbase      ( awbase_rs_fsm       ),
+      .resize_awsize      ( awsize_rs_fsm       ),
+      .resize_rd_start    ( rd_start_rs         ),
+      .resize_wr_start    ( wr_start_rs         ),
+      .resize_din_ready   ( rs_din_ready        ),
+      .resize_dout        ( rs_dout             ),
+      .resize_dout_valid  ( rs_dout_valid       ),
+      .resize_rd_done     ( arb_rd_done_rs      ),
+      .resize_wr_done     ( arb_wr_done_rs      ),
+      .resize_comp_done   ( comp_done_rs        ),
+
       // To DMA interface
       .itf_arbase         ( itf_arbase_arb      ),
       .itf_arsize         ( itf_arsize_arb      ),
@@ -331,6 +415,7 @@ module customop_top(
       // Control signals
       .gather_comp_start  ( comp_start_cross    ),
       .hadamard_comp_start( comp_start_hd       ),
+      .resize_comp_start  ( comp_start_rs       ),
 
       .clk                ( clk                 ),
       .rst_n              ( rst_n_1             )
@@ -470,6 +555,130 @@ module customop_top(
 
       .clk              ( clk               ),
       .rst_n            ( rst_n_1           )
+  );
+
+  // ============================================================
+  // Resize Module Instances
+  // ============================================================
+
+  // Resize FSM
+  resize_fsm U_resize_fsm (
+      .rd_done          ( arb_rd_done_rs     ), // input - from arbiter
+      .wr_done          ( arb_wr_done_rs     ), // input - from arbiter
+      .rs_comp_start    ( comp_start_rs     ), // input - from reg_ctrl
+      .arbase_rs_gen   ( arbase_rs_gen    ), // input
+      .arbase_rs_gen_2 ( arbase_rs_gen_2   ), // input
+      .arsize_rs_gen   ( arsize_rs_gen    ), // input
+      .awbase_rs_gen   ( awbase_rs_gen    ), // input
+      .awsize_rs_gen   ( awsize_rs_gen    ), // input
+      .rs_addr_gen_valid( rs_addr_gen_valid ), // input
+      .rs_first_line   ( rs_first_line     ), // input
+      .rs_last_line    ( rs_last_line      ), // input
+      .resize_done      ( rs_resize_done    ), // input - from resize core
+      .axis_done        ( axis_done_axis     ), // input - from resize_axis
+      .axis_pre_cal_done( axis_pre_cal_done_axis ), // input - from resize_axis
+
+      .arbase           ( arbase_rs_fsm    ), // output
+      .arsize           ( arsize_rs_fsm    ), // output
+      .awbase           ( awbase_rs_fsm    ), // output
+      .awsize           ( awsize_rs_fsm    ), // output
+      .rd_start         ( rd_start_rs       ), // output
+      .wr_start         ( wr_start_rs       ), // output
+      .rd_second        ( rd_second_rs      ), // output
+      .comp_done        ( comp_done_rs      ), // output
+      .trans_status     ( trans_status_rs   ), // output [1:0]
+      .gen_status       ( gen_status_rs     ), // output
+      .axis_pre_cal    ( axis_pre_cal_rs   ), // output
+      .axis_cal_status ( axis_cal_status_rs ), // output
+      .resize_status    ( resize_status_rs  ), // output
+
+      .clk              ( clk              ),
+      .rst_n            ( rst_n_1          )
+  );
+
+  // Resize Axis Calculator
+  resize_axis U_resize_axis (
+      .axis_pre_cal    ( axis_pre_cal_rs   ), // input
+      .axis_cal_status ( axis_cal_status_rs ), // input
+      .resize_status    ( resize_status_rs  ), // input
+      .trans_status    ( trans_status_rs   ), // input [1:0]
+
+      .rwidth_rs       ( rwidth_rs        ), // input [15:0]
+      .rheight_rs      ( rheight_rs       ), // input [15:0]
+      .wwidth_rs       ( wwidth_rs        ), // input [15:0]
+      .wheight_rs      ( wheight_rs       ), // input [15:0]
+
+      .data_valid      ( data_valid_axis   ), // output [7:0]
+      .x_delta         ( x_delta_axis      ), // output [255:0]
+      .y_delta         ( y_delta_axis      ), // output [7:0]
+      .y_bias          ( y_bias_axis       ), // output [15:0]
+
+      .axis_done       ( axis_done_axis     ), // output
+      .axis_pre_cal_done( axis_pre_cal_done_axis ), // output
+
+      .clk              ( clk              ),
+      .rst_n            ( rst_n_1          )
+  );
+
+  // Resize Address Generator
+  resize_addr_gen U_resize_addr_gen (
+      .trans_status    ( trans_status_rs   ), // input [1:0]
+      .rd_second       ( rd_second_rs     ), // input
+      .gen_status      ( gen_status_rs     ), // input
+
+      .rbase_rs        ( rbase_rs         ), // input [31:0]
+      .rwidth_rs       ( rwidth_rs        ), // input [15:0]
+      .rheight_rs      ( rheight_rs       ), // input [15:0]
+      .wwidth_rs       ( wwidth_rs        ), // input [15:0]
+      .wheight_rs      ( wheight_rs       ), // input [15:0]
+      .wbase_rs        ( wbase_rs         ), // input [31:0]
+
+      .data_valid      ( data_valid_axis   ), // input [7:0]
+      .y_delta         ( y_delta_axis      ), // input [7:0]
+      .y_bias          ( y_bias_axis       ), // input [15:0]
+
+      .rs_addr_gen_valid( rs_addr_gen_valid ), // output
+      .arbase_rs_gen   ( arbase_rs_gen    ), // output [31:0]
+      .arbase_rs_gen_2 ( arbase_rs_gen_2   ), // output [31:0]
+      .arsize_rs_gen   ( arsize_rs_gen    ), // output [15:0]
+      .awbase_rs_gen   ( awbase_rs_gen    ), // output [31:0]
+      .awsize_rs_gen   ( awsize_rs_gen    ), // output [15:0]
+      .rs_first_line   ( rs_first_line     ), // output
+      .rs_last_line    ( rs_last_line      ), // output
+
+      .comp_done_rs    ( comp_done_rs      ), // input
+
+      .clk              ( clk              ),
+      .rst_n            ( rst_n_1          )
+  );
+
+  // Resize Core (Bilinear Interpolation)
+  resize U_resize (
+      .gen_status      ( gen_status_rs     ), // input
+      .resize_status    ( resize_status_rs  ), // input
+      .rd_second       ( rd_second_rs     ), // input
+      .trans_status    ( trans_status_rs   ), // input [1:0]
+      .wr_done         ( arb_wr_done_rs   ), // input
+      .axis_cal_done   ( axis_cal_status_rs ), // input
+
+      .data_valid      ( data_valid_axis   ), // input [7:0]
+      .x_delta         ( x_delta_axis      ), // input [255:0]
+      .y_delta         ( y_delta_axis      ), // input [7:0]
+      .y_bias          ( y_bias_axis       ), // input [15:0]
+
+      .din             ( itf_rdata         ), // input [511:0] - 直接连接DMA读数据
+      .din_valid       ( itf_rvalid        ), // input
+      .din_ready       ( rs_din_ready      ), // output
+
+      .dout            ( rs_dout           ), // output [511:0] - 通过arbiter仲裁
+      .dout_valid      ( rs_dout_valid     ), // output
+      .dout_ready      ( rs_dout_ready     ), // input
+
+      .comp_done       ( comp_done_rs      ), // input
+      .resize_done     ( rs_resize_done    ), // output
+
+      .clk              ( clk              ),
+      .rst_n            ( rst_n_1          )
   );
 
   always@(posedge clk or negedge ra_rst_n) begin
