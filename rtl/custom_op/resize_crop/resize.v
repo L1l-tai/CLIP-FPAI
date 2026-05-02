@@ -207,7 +207,7 @@ generate
                 rs_regs[i] <= #0.1 32'd0;
                 rs_regs_2[i] <= #0.1 32'd0;
             end
-            else if (dout_valid & dout_ready) begin
+            else if (din_valid & din_ready) begin
                 if (~rd_second) begin
                     rs_regs[i] <= #0.1 din[i * 32 +: 32];
                 end

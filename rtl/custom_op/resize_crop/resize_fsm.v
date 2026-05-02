@@ -78,9 +78,11 @@ reg         rd_start_pulse_gen;
 
 wire        wr_ddr;
 wire        rd_ddr;
+wire        rd_done_pos;
 
 assign wr_ddr = (state == WR_PIPELINE) | (state == WR_ONLY);
 assign rd_ddr = (state == WR_PIPELINE) | (state == RD_ONLY) | (state == RD_SECONE);
+assign rd_done_pos = rd_done & ~rd_done_reg;
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -115,6 +117,10 @@ always @(posedge clk or negedge rst_n) begin
             if(!rd_start_pulse_gen) begin
                 rd_start <= #0.1 1'b1;
                 rd_start_pulse_gen <= #0.1 1'b1;
+            end
+            else if(rd_done_pos) begin
+                rd_start <= #0.1 1'b0;
+                rd_start_pulse_gen <= #0.1 1'b0;
             end
             else begin
                 rd_start <= #0.1 1'b0;

@@ -48,25 +48,39 @@ module reciprocal #(
     output reg                      ready        // 模块就绪
 );
 
-    // 牛顿-拉夫森迭代状态机
+    // 牛顿-拉夫森迭代状态机（三级流水线）
     // ---------------------------------------------------
-    // IDLE  : 等待输入，当 valid_in 且 dividend != 0 时进入 INIT
-    // INIT  : 初始化迭代，将 x_n = dividend，y_n = 2 - x（初始估计）
-    // ITER  : 执行牛顿-拉夫森迭代 y_{n+1} = y_n × (2 - x × y_n)
-    // DONE  : 迭代完成，输出结果 reciprocal = y_n
-    localparam IDLE = 2'd0;
-    localparam INIT = 2'd1;
-    localparam ITER = 2'd2;
-    localparam DONE = 2'd3;
+    // IDLE   : 等待输入，当 valid_in 且 dividend != 0 时进入 INIT
+    // INIT   : 初始化迭代，将 x_n = dividend，y_n = 2 - x（初始估计）
+    // ITER1  : 第一级流水线 - 计算 mul_temp = x_n × y_n
+    // ITER2  : 第二级流水线 - 计算 two_minus_xy = 2 - mul_temp
+    // ITER3  : 第三级流水线 - 计算 mul_temp2 = y_n × two_minus_xy，更新 y_n 和 iter_cnt
+    // DONE   : 迭代完成，输出结果 reciprocal = y_n
+    localparam IDLE  = 4'd0;
+    localparam INIT  = 4'd1;
+    localparam ITER1 = 4'd2;
+    localparam ITER2 = 4'd3;
+    localparam ITER3 = 4'd4;
+    localparam DONE  = 4'd5;
 
     // 状态机寄存器
-    reg [1:0] state;
-    reg [1:0] next_state;
+    reg [2:0] state;
+    reg [2:0] next_state;
 
     // 迭代过程寄存器
     reg [DATA_WIDTH-1:0] x_n;        // 当前迭代的被除数（保持不变）
     reg [DATA_WIDTH-1:0] y_n;        // 当前迭代的1/x近似值
     reg [2:0] iter_cnt;             // 迭代计数器
+
+    // 三级流水线寄存器
+    reg [DATA_WIDTH*2-1:0] mul_temp_r;      // 第一级流水线寄存器
+    reg [DATA_WIDTH-1:0] two_minus_xy_r;    // 第二级流水线寄存器
+    reg [DATA_WIDTH*2-1:0] mul_temp2_r;      // 第三级流水线寄存器
+
+    // 迭代计算中间信号（组合逻辑）
+    wire [DATA_WIDTH*2-1:0] mul_temp;    // x_n × y_n
+    wire [DATA_WIDTH-1:0] two_minus_xy;   // 2 - x_n × y_n
+    wire [DATA_WIDTH*2-1:0] mul_temp2;    // y_n × two_minus_xy
 
     // 初始估计值计算
     // ---------------------------------------------------
@@ -79,6 +93,17 @@ module reciprocal #(
     //   其中 {1'b1, ...} 表示常数2（定点数格式）
     wire [DATA_WIDTH-1:0] y_init;
     assign y_init = {1'b1, ~dividend[DATA_WIDTH-2:0]} + 1'b1;
+
+    // 迭代计算组合逻辑赋值（三级流水线）
+    // ---------------------------------------------------
+    // 第一级：mul_temp = x_n × y_n
+    assign mul_temp = x_n * y_n;
+
+    // 第二级：two_minus_xy = 2 - mul_temp
+    assign two_minus_xy = {1'b1, {(DATA_WIDTH-1){1'b0}}} - mul_temp_r[DATA_WIDTH-1:0];
+
+    // 第三级：mul_temp2 = y_n × two_minus_xy
+    assign mul_temp2 = y_n * two_minus_xy_r;
 
     // 状态转移（时序逻辑）
     always @(posedge clk or negedge rst_n) begin
@@ -95,37 +120,43 @@ module reciprocal #(
         next_state = state;
         case (state)
             IDLE: begin
-                // 当输入有效且被除数非零时，开始计算
                 if (valid_in && dividend != 0) begin
                     next_state = INIT;
                 end
             end
             INIT: begin
-                // 初始化完成，进入迭代阶段
-                next_state = ITER;
+                next_state = ITER1;
             end
-            ITER: begin
-                // 达到指定迭代次数后，进入完成状态
-                if (iter_cnt == ITER_NUM - 1) begin
+            ITER1: begin
+                next_state = ITER2;
+            end
+            ITER2: begin
+                next_state = ITER3;
+            end
+            ITER3: begin
+                if (iter_cnt == ITER_NUM) begin
                     next_state = DONE;
+                end
+                else begin
+                    next_state = ITER1;
                 end
             end
             DONE: begin
-                // 完成一次计算后，返回空闲状态等待下一个输入
                 next_state = IDLE;
             end
             default: next_state = IDLE;
         endcase
     end
 
-    // 迭代计算（时序逻辑）
+    // 迭代计算（三级流水线时序逻辑）
     // ---------------------------------------------------
     // 牛顿-拉夫森迭代公式：y_{n+1} = y_n × (2 - x_n × y_n)
-    // 展开步骤：
-    //   Step 1: mul_temp  = x_n × y_n
-    //   Step 2: two_xy    = 2 - mul_temp[DATA_WIDTH-1:0]
-    //   Step 3: mul_temp2 = y_n × two_xy
-    //   Step 4: y_n       = mul_temp2[DATA_WIDTH-1:0]
+    // 三级流水线：
+    //   第一级 (ITER1)：mul_temp_r <= x_n × y_n
+    //   第二级 (ITER2)：two_minus_xy_r <= 2 - mul_temp_r
+    //   第三级 (ITER3)：mul_temp2_r <= y_n × two_minus_xy_r
+    //                  y_n <= mul_temp2_r[DATA_WIDTH-1:0]
+    //                  iter_cnt++
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             x_n <= 0;
@@ -133,54 +164,55 @@ module reciprocal #(
             iter_cnt <= 0;
             valid_out <= 0;
             ready <= 1;
+            mul_temp_r <= 0;
+            two_minus_xy_r <= 0;
+            mul_temp2_r <= 0;
         end
         else begin
             case (state)
                 IDLE: begin
-                    // 空闲状态，初始化所有信号
                     valid_out <= 0;
                     ready <= 1;
                     iter_cnt <= 0;
+                    mul_temp_r <= 0;
+                    two_minus_xy_r <= 0;
+                    mul_temp2_r <= 0;
                 end
 
                 INIT: begin
-                    // 初始化阶段：设置被求倒数的值和初始估计
-                    ready <= 0;                 // 模块忙
-                    x_n <= dividend;           // x_n = x（被除数）
-                    y_n <= y_init;              // y_n = 2 - x（初始估计）
+                    ready <= 0;
+                    x_n <= dividend;
+                    y_n <= y_init;
                     iter_cnt <= 0;
+                    mul_temp_r <= 0;
+                    two_minus_xy_r <= 0;
+                    mul_temp2_r <= 0;
                 end
 
-                ITER: begin
-                    // ----------------------------------------
-                    // 第一步：计算 x_n × y_n
-                    // ----------------------------------------
-                    reg [DATA_WIDTH*2-1:0] mul_temp;
-                    mul_temp = x_n * y_n;
+                ITER1: begin
+                    // 第一级：计算 mul_temp = x_n × y_n
+                    mul_temp_r <= mul_temp;
+                    two_minus_xy_r <= two_minus_xy_r;
+                    mul_temp2_r <= mul_temp2_r;
+                end
 
-                    // ----------------------------------------
-                    // 第二步：计算 2 - x_n × y_n
-                    // 常数2的定点数表示：{1'b1, {(DATA_WIDTH-1){1'b0}}}
-                    // 即 2.0 = binary 10.00000000000000
-                    // ----------------------------------------
-                    reg [DATA_WIDTH-1:0] two_minus_xy;
-                    two_minus_xy = {1'b1, {(DATA_WIDTH-1){1'b0}}} - mul_temp[DATA_WIDTH-1:0];
+                ITER2: begin
+                    // 第二级：计算 two_minus_xy = 2 - mul_temp
+                    mul_temp_r <= mul_temp_r;
+                    two_minus_xy_r <= two_minus_xy;
+                    mul_temp2_r <= mul_temp2_r;
+                end
 
-                    // ----------------------------------------
-                    // 第三步：计算 y_n × (2 - x_n × y_n)
-                    // ----------------------------------------
-                    reg [DATA_WIDTH*2-1:0] mul_temp2;
-                    mul_temp2 = y_n * two_minus_xy;
-
-                    // ----------------------------------------
-                    // 第四步：更新 y_n，进入下一次迭代
-                    // ----------------------------------------
+                ITER3: begin
+                    // 第三级：计算 mul_temp2 = y_n × two_minus_xy，完成一次迭代
+                    mul_temp_r <= mul_temp_r;
+                    two_minus_xy_r <= two_minus_xy_r;
+                    mul_temp2_r <= mul_temp2;
                     y_n <= mul_temp2[DATA_WIDTH-1:0];
                     iter_cnt <= iter_cnt + 1'b1;
                 end
 
                 DONE: begin
-                    // 迭代完成，输出结果
                     reciprocal <= y_n;
                     valid_out <= 1;
                     ready <= 1;

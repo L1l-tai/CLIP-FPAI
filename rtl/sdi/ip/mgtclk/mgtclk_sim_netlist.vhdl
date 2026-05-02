@@ -1,10 +1,10 @@
 -- Copyright 1986-2018 Xilinx, Inc. All Rights Reserved.
 -- --------------------------------------------------------------------------------
 -- Tool Version: Vivado v.2018.3 (win64) Build 2405991 Thu Dec  6 23:38:27 MST 2018
--- Date        : Sun Apr  5 16:42:34 2026
+-- Date        : Fri May  1 22:06:07 2026
 -- Host        : Normalcy running 64-bit major release  (build 9200)
 -- Command     : write_vhdl -force -mode funcsim
---               C:/Users/norma/Desktop/CICC/demo/30tai_fpga_demo/20260326/fpai_demo_src_vivado/rtl/sdi/ip/mgtclk/mgtclk_sim_netlist.vhdl
+--               D:/icraft-docker/Ubuntu20.04/clip-vit-base-patch32-zg/rtl/sdi/ip/mgtclk/mgtclk_sim_netlist.vhdl
 -- Design      : mgtclk
 -- Purpose     : This VHDL netlist is a functional simulation representation of the design and should not be modified or
 --               synthesized. This netlist cannot be used for SDF annotated simulation.

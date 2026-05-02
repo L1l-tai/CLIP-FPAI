@@ -1,19 +1,21 @@
 module fwht_pub #(
     parameter EXP_W = 5,        // FP16指数宽度
     parameter MAN_W = 10,       // FP16尾数宽度
-    parameter FP_W  = 16        // FP16总宽度
+    parameter FP_W  = 16,       // FP16总宽度
+    parameter INT8_W = 8        // INT8位宽
 )(
     input  wire             clk,
     input  wire             rst_n,
 
     // 输入
-    input  wire [FP_W-1:0]  op_a,       // FP16 输入A
-    input  wire [FP_W-1:0]  op_b,       // FP16 输入B
+    input  wire [FP_W-1:0]  op_a,       // FP16 输入A (INT8时使用低8位)
+    input  wire [FP_W-1:0]  op_b,       // FP16 输入B (INT8时使用低8位)
+    input  wire             cal_percision, // 1=FP16, 0=INT8
     input  wire             valid_in,    // 输入有效信号
 
     // 输出
-    output reg  [FP_W-1:0]  result_add, // A + B (FP16)
-    output reg  [FP_W-1:0]  result_sub, // A - B (FP16)
+    output reg  [FP_W-1:0]  result_add, // A + B (FP16或INT8)
+    output reg  [FP_W-1:0]  result_sub, // A - B (FP16或INT8)
     output reg              valid_out   // 输出有效信号
 );
 
@@ -35,6 +37,7 @@ module fwht_pub #(
     reg             s1_same_sign;     // A和B符号相同
     reg             s1_valid;
 
+
     wire [MAN_W+1:0] man_small_aligned;
 
     // --- Stage 2: ADD/SUB 运算 ---
@@ -53,29 +56,35 @@ module fwht_pub #(
     // ADD Path: Simplified Norm (overflow check + 1-bit shift)
     reg [MAN_W:0]    s3_man_add_norm;
     reg [EXP_W:0]    s3_exp_add_norm;
-    reg               s3_sign_add_norm;
+    reg              s3_sign_add_norm;
 
     // SUB Path: Full Norm (leading-1 detection + variable shift)
     reg [MAN_W:0]    s3_man_sub_norm;
     reg [EXP_W:0]    s3_exp_sub_norm;
-    reg               s3_sign_sub_norm;
-    reg               s3_valid;
+    reg              s3_sign_sub_norm;
+    reg              s3_valid;
 
     wire [EXP_W:0]  exp_diff_s;
     wire [EXP_W:0]  exp_diff_abs;
     wire [EXP_W:0]  exp_diff_neg;
     wire            a_ge_b;
-
-
+    wire [MAN_W+1:0] man_big;
+    wire [MAN_W+1:0] man_small;
+    wire [INT8_W-2:0] man_a_int8_abs;
+    wire [INT8_W-2:0] man_b_int8_abs;
 
     //参数提取
-    assign sign_a = op_a[FP_W-1];
-    assign sign_b = op_b[FP_W-1];
+    assign sign_a = cal_percision ? op_a[FP_W-1] : op_a[INT8_W-1];
+    assign sign_b = cal_percision ? op_b[FP_W-1] : op_b[INT8_W-1];
     assign exp_a  = op_a[MAN_W +: EXP_W];
     assign exp_b  = op_b[MAN_W +: EXP_W];
+
     // 尾数: 添加隐含的1 (对于非零数)
-    assign man_a  = (exp_a != 0) ? {1'b1, op_a[MAN_W-1:0]} : {1'b0, op_a[MAN_W-1:0]};
-    assign man_b  = (exp_b != 0) ? {1'b1, op_b[MAN_W-1:0]} : {1'b0, op_b[MAN_W-1:0]};
+    // INT8: 有符号补码，绝对值 = (sign? ~low7 + 1 : low7)
+    assign man_a_int8_abs = sign_a ? (~op_a[INT8_W-2:0] + 1'b1) : op_a[INT8_W-2:0];
+    assign man_b_int8_abs = sign_b ? (~op_b[INT8_W-2:0] + 1'b1) : op_b[INT8_W-2:0];
+    assign man_a  = cal_percision ? ((exp_a != 0) ? {1'b1, op_a[MAN_W-1:0]} : {1'b0, op_a[MAN_W-1:0]}) : {4'b0, man_a_int8_abs};
+    assign man_b  = cal_percision ? ((exp_b != 0) ? {1'b1, op_b[MAN_W-1:0]} : {1'b0, op_b[MAN_W-1:0]}) : {4'b0, man_b_int8_abs};
 
     // =========================================================================
     // Stage 1: Shared Pre-alignment (共享预对齐)
@@ -89,7 +98,9 @@ module fwht_pub #(
     assign exp_diff_s = {1'b0, exp_a} - {1'b0, exp_b};
     assign exp_diff_abs = exp_diff_s[EXP_W] ? -exp_diff_s : exp_diff_s; // |exp_a - exp_b|
     assign exp_diff_neg = ~exp_diff_s + 1'b1;
-    assign a_ge_b = (exp_a > exp_b) || (exp_a == exp_b && man_a >= man_b);
+    assign a_ge_b = cal_percision ? (exp_a > exp_b) || (exp_a == exp_b && man_a >= man_b) : man_a >= man_b;
+    assign man_big = a_ge_b ? man_a : man_b;
+    assign man_small = a_ge_b ? man_b :man_a;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -109,12 +120,10 @@ module fwht_pub #(
 
             // 交换: 大数在前, 小数移位对齐
             // 大数尾数 (直接使用, 无需移位)
-            s1_man_big  <= a_ge_b ? {man_a, 1'b0} : {man_b, 1'b0}; // 12-bit, guard bit
+            s1_man_big  <= {man_big, 1'b0}; // 12-bit, guard bit
 
             // 小数尾数移位对齐
-            s1_man_small_shifted <= a_ge_b
-                ? ({man_b, 4'b0} >> exp_diff_abs)    // B较小, 右移对齐
-                : ({man_a, 4'b0} >> exp_diff_abs);   // A较小, 右移对齐
+            s1_man_small_shifted <= {man_small, 4'b0} >> exp_diff_abs;    // 右移对齐
         end
     end
 
@@ -131,15 +140,15 @@ module fwht_pub #(
     // =========================================================================
 
     assign man_align_flag = |s1_man_small_shifted[MAN_W+4:MAN_W+2];
-    assign man_small_aligned = man_align_flag
-        ? s1_man_small_shifted[MAN_W+4:3]   // 移位量小，用高位  [14:3]
-        : s1_man_small_shifted[MAN_W+1:0];   // 移位量大，用低位  [11:0]
+    assign man_small_aligned = cal_percision ? s1_man_small_shifted[MAN_W+4:3] : {man_small, 1'b0};   // 保留高位  [14:3]
+
+
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             s2_valid <= 1'b0;
         end else begin
-            s2_valid <= s1_valid;
+            s2_valid <= cal_percision ? s1_valid : valid_in;
 
             // ---- ADD Path: Unsigned Addition (同号) ----
             s2_sum_add  <= {1'b0, s1_man_big} + {1'b0, man_small_aligned};
@@ -148,14 +157,8 @@ module fwht_pub #(
             s2_sign_add <= s1_sign_a;
 
             // ---- SUB Path: Unsigned Subtraction (异号) ----
-            if (s1_man_big >= man_small_aligned) begin
-                s2_diff_sub <= s1_man_big - man_small_aligned;
-                s2_sign_sub <= s1_a_ge_b ? s1_sign_a : ~s1_sign_a; // 大数符号
-            end
-            else begin
-                s2_diff_sub <= man_small_aligned - s1_man_big;
-                s2_sign_sub <= s1_a_ge_b ? ~s1_sign_b : s1_sign_b; // 翻转
-            end
+            s2_diff_sub <= s1_man_big - man_small_aligned;
+            s2_sign_sub <= s1_a_ge_b ? s1_sign_a : ~s1_sign_a; // 大数符号
             s2_exp_sub <= s1_exp_max;
         end
     end
@@ -209,11 +212,11 @@ module fwht_pub #(
             // ---- ADD Path: Simplified Normalization ----
             if (s2_sum_add[MAN_W+2]) begin
                 // Carry溢出: 右移1位, 指数+1
-                s3_man_add_norm <= s2_sum_add[MAN_W+1:1]; // 丢掉LSB, 取[MAN_W+1:1]
+                s3_man_add_norm <= s2_sum_add[MAN_W+2:2]; // 丢掉LSB, 取[MAN_W+1:1]
                 s3_exp_add_norm <= s2_exp_add + 1;
             end else begin
                 // 无溢出: 直接取
-                s3_man_add_norm <= s2_sum_add[MAN_W:0];
+                s3_man_add_norm <= s2_sum_add[MAN_W+1:1];
                 s3_exp_add_norm <= s2_exp_add;
             end
             s3_sign_add_norm <= s2_sign_add;
@@ -226,13 +229,20 @@ module fwht_pub #(
                 s3_sign_sub_norm <= 1'b0;
             end else begin
                 // 前导1检测 + 可变左移
-                s3_man_sub_norm <= sub_shifted[MAN_W:0];
+                s3_man_sub_norm <= sub_shifted[MAN_W+1:1];
                 s3_exp_sub_norm <= s2_exp_sub - (MAN_W + 1 - sub_leading_pos);
                 s3_sign_sub_norm <= s2_sign_sub;
             end
         end
     end
 
+    wire [FP_W-1 : 0] s3_merge_add;
+    wire [FP_W-1 : 0] s3_merge_sub;
+
+    assign s3_merge_add = cal_percision ? {s3_sign_add_norm, s3_exp_add_norm[EXP_W-1:0], s3_man_add_norm[MAN_W-1:0]}
+                                        :  s2_sign_add ? {8'b0, s2_sign_add, ~s2_sum_add[INT8_W-1:1] + 1} : {8'b0, s2_sign_add, s2_sum_add[INT8_W-1:1]};
+    assign s3_merge_sub = cal_percision ? {s3_sign_sub_norm, s3_exp_sub_norm[EXP_W-1:0], s3_man_sub_norm[MAN_W-1:0]}
+                                        :  s2_sign_sub ? {8'b0, s2_sign_sub, ~s2_diff_sub[INT8_W-1:1] + 1} : {8'b0, s2_sign_sub, s2_diff_sub[INT8_W-1:1]} ;
     // =========================================================================
     // Stage 4: Post Sign Processing + 输出打包
     // =========================================================================
@@ -250,29 +260,21 @@ module fwht_pub #(
             result_sub <= 0;
             valid_out  <= 1'b0;
         end else begin
-            valid_out <= s3_valid;
+            valid_out <= cal_percision ? s3_valid  : s2_valid;
 
             // ---- Pack A + B ----
             // 蝶形ADD输出: 始终输出A+B
             //   当同号时: sign = sign_a, result = |A|+|B|
             //   当异号时: sign = sign of larger, result = |大|-|小|
             //   对于A+B: 同号 → sign_a, 异号 → sign_a(若|A|>|B|) 或 sign_b(若|B|>|A|)
-            result_add <= {
-                s3_sign_add_norm,                           // [15] sign
-                s3_exp_add_norm[EXP_W-1:0],                 // [14:10] exponent
-                s3_man_add_norm[MAN_W-1:0]                  // [9:0] mantissa (去掉隐含1)
-            };
+            result_add <= sign_a == sign_b ? s3_merge_add : s3_merge_sub;
 
             // ---- Pack A - B ----
             // 蝶形SUB输出: 输出A-B
             //   A-B的符号: 与A+B的符号可能不同
             //   同号时: A-B = |A|-|B|, sign由大小关系决定
             //   异号时: A-B = |A|+|B|, sign = sign_a
-            result_sub <= {
-                s3_sign_sub_norm,                           // [15] sign
-                s3_exp_sub_norm[EXP_W-1:0],                 // [14:10] exponent
-                s3_man_sub_norm[MAN_W-1:0]                  // [9:0] mantissa (去掉隐含1)
-            };
+            result_sub <= sign_a == sign_b ? s3_merge_sub : s3_merge_add;
         end
     end
 

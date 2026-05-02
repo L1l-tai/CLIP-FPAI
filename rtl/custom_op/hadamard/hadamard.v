@@ -144,14 +144,47 @@ end
 endgenerate
 
 // 6级FWHT共需要6个stage，stage0为输入
-wire [15:0]         stage0   [63:0];
-wire [15:0]         stage1   [63:0];
-wire [15:0]         stage2   [63:0];
-wire [15:0]         stage3   [63:0];
-wire [15:0]         stage4   [63:0];
-wire [15:0]         stage5   [63:0];
-wire [15:0]         stage6   [63:0];
-wire                s_valid [6:0];
+reg  [15:0]         stage0   [63:0];
+reg  [15:0]         stage1   [63:0];
+reg  [15:0]         stage2   [63:0];
+reg  [15:0]         stage3   [63:0];
+reg  [15:0]         stage4   [63:0];
+reg  [15:0]         stage5   [63:0];
+reg  [15:0]         stage6   [63:0];
+wire                 s0_valid;
+wire                 s1_valid;
+wire                 s2_valid;
+wire                 s3_valid;
+wire                 s4_valid;
+wire                 s5_valid;
+wire                 s6_valid;
+reg                  s0_valid_r;
+reg                  s1_valid_r;
+reg                  s2_valid_r;
+reg                  s3_valid_r;
+reg                  s4_valid_r;
+reg                  s5_valid_r;
+reg                  s6_valid_r;
+wire                 s0_valid_pos;
+wire                 s1_valid_pos;
+wire                 s2_valid_pos;
+wire                 s3_valid_pos;
+wire                 s4_valid_pos;
+wire                 s5_valid_pos;
+wire                 s6_valid_pos;
+reg                  s0_valid_pos_r;
+reg                  s1_valid_pos_r;
+reg                  s2_valid_pos_r;
+reg                  s3_valid_pos_r;
+reg                  s4_valid_pos_r;
+reg                  s5_valid_pos_r;
+reg                  s6_valid_pos_r;
+
+wire [31:0]         s_valid_out;
+wire                s_valid_out_all;
+reg                 s_valid_out_r;
+reg [2:0]           stage_cnt;
+
 
 reg                w_reg_valid_r;
 reg                result_valid;
@@ -184,205 +217,230 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 
+// Register stage0 on rising edge of fwht_status
+reg fwht_status_r;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        fwht_status_r <= 1'b0;
+    end else begin
+        fwht_status_r <= fwht_status;
+    end
+end
+
 generate
-    for (i = 0; i < 64 ; i = i + 1) begin
-        assign stage0[i] = fwht_status ? fwht_regs[i] : 16'b0;
+    for (i = 0; i < 64; i = i + 1) begin
+        always @(posedge clk or negedge rst_n) begin
+            if (!rst_n) begin
+                stage0[i] <= 16'b0;
+            end else if (fwht_status && !fwht_status_r) begin
+                stage0[i] <= fwht_regs[i];
+            end
+        end
     end
 endgenerate
 
-assign s_valid[0] = fwht_status;
-assign w_reg_valid = s_valid[6];
+// s_valid[0] directly from fwht_status, s_valid[1-6] registered
+
+assign w_reg_valid = s6_valid;
 assign w_reg_valid_pos = w_reg_valid & ~w_reg_valid_r;
+assign s_valid_out_all = &s_valid_out;
 
-// ============================================================
-// Stage 0: DIST=1, stride=1, 32 butterflies for 64-point FWHT
-// ============================================================
-generate
-    for (i = 0; i < 32; i = i + 1) begin
-        localparam LO = i * 2;
-        localparam HI = LO + 1;
-        wire [15:0] op_a0;
-        wire [15:0] op_b0;
-        wire [15:0] result_add0;
-        wire [15:0] result_sub0;
-        assign op_a0 = stage0[LO];
-        assign op_b0 = stage0[HI];
-        fwht_pub #(
-            .EXP_W(5),
-            .MAN_W(10),
-            .FP_W(16)
-        ) u_fwht_pub_s0 (
-            .clk        (clk),
-            .rst_n      (rst_n),
-            .op_a       (op_a0),
-            .op_b       (op_b0),
-            .valid_in   (s_valid[0]),
-            .result_add (result_add0),
-            .result_sub (result_sub0),
-            .valid_out  (s_valid[1])
-        );
-        assign stage1[LO] = result_add0;
-        assign stage1[HI] = result_sub0;
+assign s0_valid = fwht_status_r;
+assign s1_valid = stage_cnt == 1;
+assign s2_valid = stage_cnt == 2;
+assign s3_valid = stage_cnt == 3;
+assign s4_valid = stage_cnt == 4;
+assign s5_valid = stage_cnt == 5;
+assign s6_valid = stage_cnt == 6;
+
+always @(posedge clk or negedge rst_n) begin
+    if(!rst_n) begin
+        s_valid_out_r <= 1'b0;
     end
-endgenerate
-
-// ============================================================
-// Stage 1: DIST=2, stride=2, 32 butterflies
-// ============================================================
-generate
-    for (i = 0; i < 32; i = i + 1) begin
-        localparam LO = (i % 2) + (i / 2) * 4;
-        localparam HI = LO + 2;
-        wire [15:0] op_a1;
-        wire [15:0] op_b1;
-        wire [15:0] result_add1;
-        wire [15:0] result_sub1;
-        assign op_a1 = stage1[LO];
-        assign op_b1 = stage1[HI];
-        fwht_pub #(
-            .EXP_W(5),
-            .MAN_W(10),
-            .FP_W(16)
-        ) u_fwht_pub_s1 (
-            .clk        (clk),
-            .rst_n      (rst_n),
-            .op_a       (op_a1),
-            .op_b       (op_b1),
-            .valid_in   (s_valid[1]),
-            .result_add (result_add1),
-            .result_sub (result_sub1),
-            .valid_out  (s_valid[2])
-        );
-        assign stage2[LO] = result_add1;
-        assign stage2[HI] = result_sub1;
+    else begin
+        s_valid_out_r <= s_valid_out_all;
     end
-endgenerate
+end
 
-// ============================================================
-// Stage 2: DIST=4, stride=4, 32 butterflies
-// ============================================================
-generate
-    for (i = 0; i < 32; i = i + 1) begin
-        localparam LO = (i % 4) + (i / 4) * 8;
-        localparam HI = LO + 4;
-        wire [15:0] op_a2;
-        wire [15:0] op_b2;
-        wire [15:0] result_add2;
-        wire [15:0] result_sub2;
-        assign op_a2 = stage2[LO];
-        assign op_b2 = stage2[HI];
-        fwht_pub #(
-            .EXP_W(5),
-            .MAN_W(10),
-            .FP_W(16)
-        ) u_fwht_pub_s2 (
-            .clk        (clk),
-            .rst_n      (rst_n),
-            .op_a       (op_a2),
-            .op_b       (op_b2),
-            .valid_in   (s_valid[2]),
-            .result_add (result_add2),
-            .result_sub (result_sub2),
-            .valid_out  (s_valid[3])
-        );
-        assign stage3[LO] = result_add2;
-        assign stage3[HI] = result_sub2;
+always @(posedge clk or negedge rst_n) begin
+    if(!rst_n) begin
+        stage_cnt <= 3'd0;
     end
-endgenerate
-
-// ============================================================
-// Stage 3: DIST=8, stride=8, 32 butterflies
-// ============================================================
-generate
-    for (i = 0; i < 32; i = i + 1) begin
-        localparam LO = (i % 8) + (i / 8) * 16;
-        localparam HI = LO + 8;
-        wire [15:0] op_a3;
-        wire [15:0] op_b3;
-        wire [15:0] result_add3;
-        wire [15:0] result_sub3;
-        assign op_a3 = stage3[LO];
-        assign op_b3 = stage3[HI];
-        fwht_pub #(
-            .EXP_W(5),
-            .MAN_W(10),
-            .FP_W(16)
-        ) u_fwht_pub_s3 (
-            .clk        (clk),
-            .rst_n      (rst_n),
-            .op_a       (op_a3),
-            .op_b       (op_b3),
-            .valid_in   (s_valid[3]),
-            .result_add (result_add3),
-            .result_sub (result_sub3),
-            .valid_out  (s_valid[4])
-        );
-        assign stage4[LO] = result_add3;
-        assign stage4[HI] = result_sub3;
+    else begin
+        if(gen_status) begin
+            stage_cnt <= 3'b0;
+        end
+        else if(s_valid_out_all & ~s_valid_out_r) begin
+            stage_cnt <= stage_cnt + 3'b1; //最高到6
+        end
     end
-endgenerate
+end
 
-// ============================================================
-// Stage 4: DIST=16, stride=16, 32 butterflies
-// ============================================================
-generate
-    for (i = 0; i < 32; i = i + 1) begin
-        localparam LO = (i % 16) + (i / 16) * 32;
-        localparam HI = LO + 16;
-        wire [15:0] op_a4;
-        wire [15:0] op_b4;
-        wire [15:0] result_add4;
-        wire [15:0] result_sub4;
-        assign op_a4 = stage4[LO];
-        assign op_b4 = stage4[HI];
-        fwht_pub #(
-            .EXP_W(5),
-            .MAN_W(10),
-            .FP_W(16)
-        ) u_fwht_pub_s4 (
-            .clk        (clk),
-            .rst_n      (rst_n),
-            .op_a       (op_a4),
-            .op_b       (op_b4),
-            .valid_in   (s_valid[4]),
-            .result_add (result_add4),
-            .result_sub (result_sub4),
-            .valid_out  (s_valid[5])
-        );
-        assign stage5[LO] = result_add4;
-        assign stage5[HI] = result_sub4;
+always @(posedge clk or negedge rst_n) begin
+    if(!rst_n) begin
+        s0_valid_r <= 1'b0;
+        s1_valid_r <= 1'b0;
+        s2_valid_r <= 1'b0;
+        s3_valid_r <= 1'b0;
+        s4_valid_r <= 1'b0;
+        s5_valid_r <= 1'b0;
+        s6_valid_r <= 1'b0;
+        s0_valid_pos_r <= 1'b0;
+        s1_valid_pos_r <= 1'b0;
+        s2_valid_pos_r <= 1'b0;
+        s3_valid_pos_r <= 1'b0;
+        s4_valid_pos_r <= 1'b0;
+        s5_valid_pos_r <= 1'b0;
+        s6_valid_pos_r <= 1'b0;
     end
-endgenerate
+    else begin
+        s0_valid_r <= s0_valid;
+        s1_valid_r <= s1_valid;
+        s2_valid_r <= s2_valid;
+        s3_valid_r <= s3_valid;
+        s4_valid_r <= s4_valid;
+        s5_valid_r <= s5_valid;
+        s6_valid_r <= s6_valid;
+        s0_valid_pos_r <= s0_valid_pos;
+        s1_valid_pos_r <= s1_valid_pos;
+        s2_valid_pos_r <= s2_valid_pos;
+        s3_valid_pos_r <= s3_valid_pos;
+        s4_valid_pos_r <= s4_valid_pos;
+        s5_valid_pos_r <= s5_valid_pos;
+        s6_valid_pos_r <= s6_valid_pos;
+    end
+end
+
+assign s0_valid_pos = s0_valid & ~s0_valid_r;
+assign s1_valid_pos = s1_valid & ~s1_valid_r;
+assign s2_valid_pos = s2_valid & ~s2_valid_r;
+assign s3_valid_pos = s3_valid & ~s3_valid_r;
+assign s4_valid_pos = s4_valid & ~s4_valid_r;
+assign s5_valid_pos = s5_valid & ~s5_valid_r; 
+assign s6_valid_pos = s6_valid & ~s6_valid_r;
 
 // ============================================================
-// Stage 5: DIST=32, stride=32, 32 butterflies
+// Stage 0-5: 32 butterflies per stage, captured on valid_out rising edge
 // ============================================================
 generate
     for (i = 0; i < 32; i = i + 1) begin
-        localparam LO = (i % 32) + (i / 32) * 64;
-        localparam HI = LO + 32;
-        wire [15:0] op_a5;
-        wire [15:0] op_b5;
-        wire [15:0] result_add5;
-        wire [15:0] result_sub5;
-        assign op_a5 = stage5[LO];
-        assign op_b5 = stage5[HI];
+        localparam LO0 = i * 2;
+        localparam HI0 = LO0 + 1;
+        localparam LO1 = (i % 2) + (i / 2) * 4;
+        localparam HI1 = LO1 + 2;
+        localparam LO2 = (i % 4) + (i / 4) * 8;
+        localparam HI2 = LO2 + 4;
+        localparam LO3 = (i % 8) + (i / 8) * 16;
+        localparam HI3 = LO3 + 8;
+        localparam LO4 = (i % 16) + (i / 16) * 32;
+        localparam HI4 = LO4 + 16;
+        localparam LO5 = (i % 32) + (i / 32) * 64;
+        localparam HI5 = LO5 + 32;
+
+        wire [15:0] op_a;
+        wire [15:0] op_b;
+        wire        s_valid_in;
+        wire [15:0] result_add;
+        wire [15:0] result_sub;
+        assign op_a = s5_valid_r ? stage5[LO5] :
+                      s4_valid_r ? stage4[LO4] :
+                      s3_valid_r ? stage3[LO3] :
+                      s2_valid_r ? stage2[LO2] :
+                      s1_valid_r ? stage1[LO1] :
+                      s0_valid_r ? stage0[LO0] : 16'd0;
+
+                      
+        assign op_b = s5_valid_r ? stage5[HI5] :
+                      s4_valid_r ? stage4[HI4] :
+                      s3_valid_r ? stage3[HI3] :
+                      s2_valid_r ? stage2[HI2] :
+                      s1_valid_r ? stage1[HI1] :
+                      s0_valid_r ? stage0[HI0] : 16'd0;
+
+        assign s_valid_in = s0_valid_pos_r | s1_valid_pos_r | s2_valid_pos_r | 
+                            s3_valid_pos_r | s4_valid_pos_r | s5_valid_pos_r ;
+
         fwht_pub #(
             .EXP_W(5),
             .MAN_W(10),
             .FP_W(16)
-        ) u_fwht_pub_s5 (
-            .clk        (clk),
-            .rst_n      (rst_n),
-            .op_a       (op_a5),
-            .op_b       (op_b5),
-            .valid_in   (s_valid[5]),
-            .result_add (result_add5),
-            .result_sub (result_sub5),
-            .valid_out  (s_valid[6])
+        ) u_fwht_pub (
+            .clk            (clk),
+            .rst_n          (rst_n),
+            .cal_percision  (cal_percision),
+            .op_a           (op_a),
+            .op_b           (op_b),
+            .valid_in       (s_valid_in),
+            .result_add     (result_add),
+            .result_sub     (result_sub),
+            .valid_out      (s_valid_out[i])
         );
-        assign stage6[LO] = result_add5;
-        assign stage6[HI] = result_sub5;
+
+        // Stage 1 capture on s1_valid rising edge
+        always @(posedge clk or negedge rst_n) begin
+            if (!rst_n) begin
+                stage1[LO0] <= 16'b0;
+                stage1[HI0] <= 16'b0;
+            end else if (s1_valid_pos) begin
+                stage1[LO0] <= result_add;
+                stage1[HI0] <= result_sub;
+            end
+        end
+
+        // Stage 2 capture on s2_valid rising edge
+        always @(posedge clk or negedge rst_n) begin
+            if (!rst_n) begin
+                stage2[LO1] <= 16'b0;
+                stage2[HI1] <= 16'b0;
+            end else if (s2_valid_pos) begin
+                stage2[LO1] <= result_add;
+                stage2[HI1] <= result_sub;
+            end
+        end
+
+        // Stage 3 capture on s3_valid rising edge
+        always @(posedge clk or negedge rst_n) begin
+            if (!rst_n) begin
+                stage3[LO2] <= 16'b0;
+                stage3[HI2] <= 16'b0;
+            end else if (s3_valid_pos) begin
+                stage3[LO2] <= result_add;
+                stage3[HI2] <= result_sub;
+            end
+        end
+
+        // Stage 4 capture on s4_valid rising edge
+        always @(posedge clk or negedge rst_n) begin
+            if (!rst_n) begin
+                stage4[LO3] <= 16'b0;
+                stage4[HI3] <= 16'b0;
+            end else if (s4_valid_pos) begin
+                stage4[LO3] <= result_add;
+                stage4[HI3] <= result_sub;
+            end
+        end
+
+        // Stage 5 capture on s5_valid rising edge
+        always @(posedge clk or negedge rst_n) begin
+            if (!rst_n) begin
+                stage5[LO4] <= 16'b0;
+                stage5[HI4] <= 16'b0;
+            end else if (s5_valid_pos) begin
+                stage5[LO4] <= result_add;
+                stage5[HI4] <= result_sub;
+            end
+        end
+
+        // Stage 6 capture on s6_valid rising edge
+        always @(posedge clk or negedge rst_n) begin
+            if (!rst_n) begin
+                stage6[LO5] <= 16'b0;
+                stage6[HI5] <= 16'b0;
+            end else if (s6_valid_pos) begin
+                stage6[LO5] <= result_add;
+                stage6[HI5] <= result_sub;
+            end
+        end
     end
 endgenerate
 

@@ -195,7 +195,7 @@ module reg_ctrl(
 
     always@(posedge clk or negedge rst_n) begin
         if(rst_n==1'b0)
-            comp_start <= #0.1 0;
+            comp_start_hd <= #0.1 0;
         else if(comp_start_hd==1'b1)
             comp_start_hd <= #0.1 0;
         else if(ra_awevent && ra_awaddr==HD_COMP_START_ADDR)

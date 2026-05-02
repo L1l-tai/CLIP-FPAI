@@ -1,10 +1,10 @@
 -- Copyright 1986-2018 Xilinx, Inc. All Rights Reserved.
 -- --------------------------------------------------------------------------------
 -- Tool Version: Vivado v.2018.3 (win64) Build 2405991 Thu Dec  6 23:38:27 MST 2018
--- Date        : Mon Mar 23 14:58:53 2026
--- Host        : DESKTOP-7CRHBA3 running 64-bit major release  (build 9200)
+-- Date        : Fri May  1 22:05:50 2026
+-- Host        : Normalcy running 64-bit major release  (build 9200)
 -- Command     : write_vhdl -force -mode synth_stub
---               D:/project/sfweng/fpai_demo/fpai_demo.srcs/rtl/sdi/ip/sys_clk/sys_clk_stub.vhdl
+--               D:/icraft-docker/Ubuntu20.04/clip-vit-base-patch32-zg/rtl/sdi/ip/sys_clk/sys_clk_stub.vhdl
 -- Design      : sys_clk
 -- Purpose     : Stub declaration of top-level module interface
 -- Device      : xc7z030ffg676-2

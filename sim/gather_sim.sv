@@ -63,7 +63,7 @@ module gather_sim;
     wire        reset_reg;
 
     // DUT实例化
-    gather_top U_gather_top (
+    customop_top U_customop_top (
         .itf_ra_awaddr     (itf_ra_awaddr),
         .itf_ra_awdata     (itf_ra_awdata),
         .itf_ra_awvalid    (itf_ra_awvalid),
