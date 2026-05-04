@@ -98,7 +98,7 @@ module fwht_pub #(
     assign exp_diff_s = {1'b0, exp_a} - {1'b0, exp_b};
     assign exp_diff_abs = exp_diff_s[EXP_W] ? -exp_diff_s : exp_diff_s; // |exp_a - exp_b|
     assign exp_diff_neg = ~exp_diff_s + 1'b1;
-    assign a_ge_b = cal_percision ? (exp_a > exp_b) || (exp_a == exp_b && man_a >= man_b) : man_a >= man_b;
+    assign a_ge_b = (exp_a > exp_b) || (exp_a == exp_b && man_a >= man_b);
     assign man_big = a_ge_b ? man_a : man_b;
     assign man_small = a_ge_b ? man_b :man_a;
 
@@ -123,7 +123,7 @@ module fwht_pub #(
             s1_man_big  <= {man_big, 1'b0}; // 12-bit, guard bit
 
             // 小数尾数移位对齐
-            s1_man_small_shifted <= {man_small, 4'b0} >> exp_diff_abs;    // 右移对齐
+            s1_man_small_shifted <={man_small, 1'b0} >> exp_diff_abs;    // 右移对齐
         end
     end
 
@@ -139,8 +139,7 @@ module fwht_pub #(
     //   结果符号取决于|A|和|B|的大小关系
     // =========================================================================
 
-    assign man_align_flag = |s1_man_small_shifted[MAN_W+4:MAN_W+2];
-    assign man_small_aligned = cal_percision ? s1_man_small_shifted[MAN_W+4:3] : {man_small, 1'b0};   // 保留高位  [14:3]
+    assign man_small_aligned = s1_man_small_shifted;   // 保留高位  [14:3]
 
 
 
@@ -148,7 +147,7 @@ module fwht_pub #(
         if (!rst_n) begin
             s2_valid <= 1'b0;
         end else begin
-            s2_valid <= cal_percision ? s1_valid : valid_in;
+            s2_valid <= s1_valid ;
 
             // ---- ADD Path: Unsigned Addition (同号) ----
             s2_sum_add  <= {1'b0, s1_man_big} + {1'b0, man_small_aligned};
@@ -238,15 +237,22 @@ module fwht_pub #(
 
     wire [FP_W-1 : 0] s3_merge_add;
     wire [FP_W-1 : 0] s3_merge_sub;
+    wire [INT8_W-2:0] int8_diff_sub;
+    wire [INT8_W-2:0] int8_sum_add;
+    wire [INT8_W-2:0] int8_sum_overflow_cut;
+
+    assign int8_sum_overflow_cut = s2_sum_add[INT8_W] ? 7'd127 : s2_sum_add[INT8_W-1:1];
+    assign int8_diff_sub = s2_sign_sub ? (~s2_diff_sub[INT8_W-1:1]) + 7'd1 : s2_diff_sub[INT8_W-1:1];
+    assign int8_sum_add = s2_sign_add ? (~int8_sum_overflow_cut) + 7'd1 : int8_sum_overflow_cut;
 
     assign s3_merge_add = cal_percision ? {s3_sign_add_norm, s3_exp_add_norm[EXP_W-1:0], s3_man_add_norm[MAN_W-1:0]}
-                                        :  s2_sign_add ? {8'b0, s2_sign_add, ~s2_sum_add[INT8_W-1:1] + 1} : {8'b0, s2_sign_add, s2_sum_add[INT8_W-1:1]};
+                                        : {8'b0, s2_sign_add, int8_sum_add};
     assign s3_merge_sub = cal_percision ? {s3_sign_sub_norm, s3_exp_sub_norm[EXP_W-1:0], s3_man_sub_norm[MAN_W-1:0]}
-                                        :  s2_sign_sub ? {8'b0, s2_sign_sub, ~s2_diff_sub[INT8_W-1:1] + 1} : {8'b0, s2_sign_sub, s2_diff_sub[INT8_W-1:1]} ;
+                                        : (int8_diff_sub!=0) ? {8'b0, s2_sign_sub, int8_diff_sub} : 16'b0 ;
     // =========================================================================
     // Stage 4: Post Sign Processing + 输出打包
     // =========================================================================
-    // 论文中Post Sign Processing确保ADD和SUB的输出符号正确:
+    // 论文中Post Sign   Processing确保ADD和SUB的输出符号正确:
     //   - ADD Path: 同号运算, 符号直接取输入符号
     //   - SUB Path: 异号运算, 符号已在Stage 2中根据大小关系确定
     //   - 对于蝶形运算 A+B 和 A-B:

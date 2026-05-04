@@ -149,6 +149,9 @@ module hadamard_sim;
     endfunction
 
     reg read_busy;
+    reg pending_awvalid;
+    reg [31:0] pending_awaddr;
+    reg [511:0] pending_awdata;
 
     // 复位序列
     initial begin
@@ -167,6 +170,9 @@ module hadamard_sim;
         itf_rdata = 0;
         itf_rvalid = 0;
         read_busy = 0;
+        pending_awvalid = 0;
+        pending_awaddr = 0;
+        pending_awdata = 0;
 
         // 等待全局复位
         #100;
@@ -272,6 +278,7 @@ module hadamard_sim;
 
         // 服务 AXI 事务
         serve_axi_transactions();
+        #50;
 
         $display("DMA Transfer Completed.");
 
@@ -378,13 +385,20 @@ module hadamard_sim;
                     itf_awready <= 0;
                 end
 
-                // 处理写数据通道 (W)
+                // 处理写数据通道 (W) - 延迟一拍写入
                 if (itf_awvalid && itf_awready) begin
+                    pending_awvalid <= 1;
+                    pending_awaddr <= itf_awaddr;
+                end
+
+                // 下一周期写入内存
+                if (pending_awvalid) begin
                     integer w_idx;
-                    w_idx = get_mem_index(itf_awaddr);
+                    w_idx = get_mem_index(pending_awaddr);
                     mem[w_idx] <= itf_awdata;
                     $display("TB: Wrote Data 0x%04X to Addr 0x%08X (Idx: %d)",
-                             itf_awdata[15:0], itf_awaddr, w_idx);
+                             itf_awdata[15:0], pending_awaddr, w_idx);
+                    pending_awvalid <= 0;
                     trans_count = trans_count + 1;
                 end
             end

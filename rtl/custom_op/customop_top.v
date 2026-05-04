@@ -148,6 +148,8 @@ module customop_top(
     wire              resize_status_rs;
 
     //Resize axis signals
+    wire [15:0]       resize_ratio_less;
+    wire [15:0]       resize_ratio_greater;
     wire [7:0]        data_valid_axis;
     wire [255:0]      x_delta_axis;
     wire [7:0]        y_delta_axis;
@@ -279,8 +281,8 @@ module customop_top(
           .rfu_wreg1     ( data_width       ),                                              
           .rfu_wreg2     ( hd_data_width    ),                                              
           .rfu_wreg3     ( hd_cal_percision ),                                              
-          .rfu_wreg4     (                  ),                                              
-          .rfu_wreg5     (                  ),                                              
+          .rfu_wreg4     ( resize_ratio_less),                                              
+          .rfu_wreg5     ( resize_ratio_greater),                                              
           .rfu_wreg6     (                  ),                                              
           .rfu_wreg7     (                  ),                                              
           .rfu_wreg8     (                  ),                                              
@@ -518,6 +520,7 @@ module customop_top(
       .arbase_hd        ( arbase_hd         ), // input [31:0]
       .wrsize_hd        ( wrsize_hd         ), // input [31:0]
       .awbase_hd        ( awbase_hd         ), // input [31:0]
+      .cal_percision    ( hd_cal_percision ),
       //.fwht_num         ( fwht_num          ), // input [15:0]
 
       .hd_addr_gen_valid( hd_addr_gen_valid ), // output
@@ -602,6 +605,8 @@ module customop_top(
       .axis_cal_status ( axis_cal_status_rs ), // input
       .resize_status    ( resize_status_rs  ), // input
       .trans_status    ( trans_status_rs   ), // input [1:0]
+      .resize_ratio_less (resize_ratio_less),
+      .resize_ratio_greater (resize_ratio_greater),
 
       .rwidth_rs       ( rwidth_rs        ), // input [15:0]
       .rheight_rs      ( rheight_rs       ), // input [15:0]
@@ -664,7 +669,6 @@ module customop_top(
       .data_valid      ( data_valid_axis   ), // input [7:0]
       .x_delta         ( x_delta_axis      ), // input [255:0]
       .y_delta         ( y_delta_axis      ), // input [7:0]
-      .y_bias          ( y_bias_axis       ), // input [15:0]
 
       .din             ( itf_rdata         ), // input [511:0] - 直接连接DMA读数据
       .din_valid       ( itf_rvalid        ), // input

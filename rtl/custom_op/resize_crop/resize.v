@@ -24,7 +24,6 @@ module resize (
     input        [7:0]      data_valid    ,     // 16个数据中的有效个数
     input        [255:0]    x_delta       ,     // P点相对于起始原像素的x偏移
     input        [7:0]      y_delta       ,     // P点相对于下一行的y偏移
-    input        [15:0]     y_bias        ,     // y轴偏移量对应的行
 
     input        [511 : 0]  din           ,
     input                   din_valid     ,
@@ -53,7 +52,6 @@ reg     [1 : 0]             wr_cnt;
 reg     [8:0]               data_valid_reg;
 reg     [15:0]              x_delta_reg [15:0];  // 16个16bit元素
 reg     [7:0]               y_delta_reg;
-reg     [15:0]              y_bias_reg;
 reg                         rd_second_reg;
 wire                        rd_second_pos;
 
@@ -104,17 +102,14 @@ always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
         data_valid_reg <= #0.1 9'd0;
         y_delta_reg <= #0.1 8'd0;
-        y_bias_reg <= #0.1 16'd0;
     end
     else if (rd_second_pos) begin
         data_valid_reg <= #0.1 data_valid;
         y_delta_reg <= #0.1 y_delta;
-        y_bias_reg <= #0.1 y_bias;
     end
     else begin
         data_valid_reg <= #0.1 data_valid_reg;
         y_delta_reg <= #0.1 y_delta_reg;
-        y_bias_reg <= #0.1 y_bias_reg;
     end
 end
 
@@ -231,56 +226,60 @@ endgenerate
 // ============================================================
 
 // y_delta_inv只取低8位作为无符号整型
-wire    [8:0]               y_delta_inv;  // 1 - y_delta, 只取低8位
-
+wire    [3:0]               y_delta_inv;  // 1 - y_delta, 只取低8位
+wire    [3:0]               y_delta_small;
 // y_delta_inv = 256 - y_delta (无符号整型)
-assign y_delta_inv = 9'd256 - {1'b0, y_delta_reg};
+assign y_delta_small = {1'b0,y_delta_reg[7:5]};
+assign y_delta_inv = 4'd8 - y_delta_small;
 
 // 计算每个像素点的四个权重 (无符号整型计算)
-wire    [8:0]               x_delta_inv [15:0];  // 1 - x_delta, 只取低8位
-wire    [17:0]              weight_11_c [15:0];  // P到Q11权重(组合逻辑)
-wire    [17:0]              weight_12_c [15:0];  // P到Q12权重(组合逻辑)
-wire    [17:0]              weight_21_c [15:0];  // P到Q21权重(组合逻辑)
-wire    [17:0]              weight_22_c [15:0];  // P到Q22权重(组合逻辑)
+wire    [3:0]               x_delta_small [15:0];
+wire    [3:0]               x_delta_inv [15:0];  // 1 - x_delta, 只取低8位
+(* use_dsp = "yes" *)  wire    [7:0]              weight_11_c [15:0];  // P到Q11权重(组合逻辑)
+(* use_dsp = "yes" *)  wire    [7:0]              weight_12_c [15:0];  // P到Q12权重(组合逻辑)
+(* use_dsp = "yes" *)  wire    [7:0]              weight_21_c [15:0];  // P到Q21权重(组合逻辑)
+(* use_dsp = "yes" *)  wire    [7:0]              weight_22_c [15:0];  // P到Q22权重(组合逻辑)
 
 // 权重寄存器
-reg     [15:0]              weight_11 [15:0];  // P到Q11权重
-reg     [15:0]              weight_12 [15:0];  // P到Q12权重
-reg     [15:0]              weight_21 [15:0];  // P到Q21权重
-reg     [15:0]              weight_22 [15:0];  // P到Q22权重
+reg     [5:0]              weight_11 [15:0];  // P到Q11权重
+reg     [5:0]              weight_12 [15:0];  // P到Q12权重
+reg     [5:0]              weight_21 [15:0];  // P到Q21权重
+reg     [5:0]              weight_22 [15:0];  // P到Q22权重
 
 genvar k;
 generate
     for (k = 0; k < 16; k = k + 1) begin: weight_calc
         // 1 - x_delta (只取低8位)
         // 只有当 k < data_valid 时才计算有效权重，否则为0
-        assign x_delta_inv[k] = (k < data_valid) ? (9'd256 - {1'b0, x_delta_reg[k][7:0]}) : 9'd0;
+        
+        assign x_delta_small[k] = (k < data_valid) ? {1'b0, x_delta_reg[k][7:5]} : 4'd0;
+        assign x_delta_inv[k] = (k < data_valid) ? (4'd8 - x_delta_small[k]) : 4'd0;
 
         // w11 = (1-x) * (1-y) = x_delta_inv * y_delta_inv
-        assign weight_11_c[k] = (k < data_valid) ? (x_delta_inv[k] * y_delta_inv) : 18'd0;
+        assign weight_11_c[k] = (k < data_valid) ? (x_delta_inv[k] * y_delta_inv) : 8'd0;
 
         // w12 = x * (1-y) = x_delta * y_delta_inv
-        assign weight_12_c[k] = (k < data_valid) ? ({1'b0, x_delta_reg[k][7:0]} * y_delta_inv) : 18'd0;
+        assign weight_12_c[k] = (k < data_valid) ? (x_delta_small[k] * y_delta_inv) : 8'd0;
 
         // w21 = (1-x) * y = x_delta_inv * y_delta
-        assign weight_21_c[k] = (k < data_valid) ? (x_delta_inv[k] * {1'b0, y_delta_reg}) : 18'd0;
+        assign weight_21_c[k] = (k < data_valid) ? (x_delta_inv[k] * y_delta_small) : 8'd0;
 
         // w22 = x * y = x_delta * y_delta
-        assign weight_22_c[k] = (k < data_valid) ? ({1'b0, x_delta_reg[k][7:0]} * {1'b0, y_delta_reg}) : 18'd0;
+        assign weight_22_c[k] = (k < data_valid) ? (x_delta_small[k] * y_delta_small) : 8'd0;
     end
 endgenerate
 
 // ============================================================
-// 根据x_delta_reg的高8位确定有效的输入索引
-// x_delta_reg[k][15:8] 表示第k个输出像素对应的Q11点的列坐标(整数部分)
+// 根据x_delta_reg的高4位确定有效的输入索引
+// x_delta_reg[k][15:12] 表示第k个输出像素对应的Q11点的列索引(0~15)
 // ============================================================
-wire    [7:0]               src_idx [15:0];  // 第k个输出像素对应的Q11源像素列索引
+wire    [3:0]               src_idx [15:0];  // 第k个输出像素对应的Q11源像素列索引
 
 genvar idx;
 generate
     for (idx = 0; idx < 16; idx = idx + 1) begin: src_idx_calc
         // 只有当 idx < data_valid 时才有有效的源像素索引
-        assign src_idx[idx] = (idx < data_valid) ? x_delta_reg[idx][15:8] : 8'd0;
+        assign src_idx[idx] = (idx < data_valid) ? x_delta_reg[idx][15:12] : 4'd0;
     end
 endgenerate
 
@@ -324,16 +323,16 @@ generate
     for (w = 0; w < 16; w = w + 1) begin: weight_reg
         always @(posedge clk or negedge rst_n) begin
             if (!rst_n) begin
-                weight_11[w] <= #0.1 16'd0;
-                weight_12[w] <= #0.1 16'd0;
-                weight_21[w] <= #0.1 16'd0;
-                weight_22[w] <= #0.1 16'd0;
+                weight_11[w] <= #0.1 6'd0;
+                weight_12[w] <= #0.1 6'd0;
+                weight_21[w] <= #0.1 6'd0;
+                weight_22[w] <= #0.1 6'd0;
             end
             else if (resize_status) begin
-                weight_11[w] <= #0.1 weight_11_c[w][15:0];
-                weight_12[w] <= #0.1 weight_12_c[w][15:0];
-                weight_21[w] <= #0.1 weight_21_c[w][15:0];
-                weight_22[w] <= #0.1 weight_22_c[w][15:0];
+                weight_11[w] <= #0.1 weight_11_c[w][5:0];
+                weight_12[w] <= #0.1 weight_12_c[w][5:0];
+                weight_21[w] <= #0.1 weight_21_c[w][5:0];
+                weight_22[w] <= #0.1 weight_22_c[w][5:0];
             end
             else begin
                 weight_11[w] <= #0.1 weight_11[w];
@@ -378,52 +377,52 @@ endgenerate
 // 像素值格式: {R[7:0], G[7:0], B[7:0], 8'b0}
 // ============================================================
 // 乘法结果组合逻辑 - 按RGB三通道拆分
-wire    [23:0]              result_11_r_c [15:0];  // Q11·w11_R通道
-wire    [23:0]              result_11_g_c [15:0];  // Q11·w11_G通道
-wire    [23:0]              result_11_b_c [15:0];  // Q11·w11_B通道
-wire    [23:0]              result_12_r_c [15:0];  // Q12·w12_R通道
-wire    [23:0]              result_12_g_c [15:0];  // Q12·w12_G通道
-wire    [23:0]              result_12_b_c [15:0];  // Q12·w12_B通道
-wire    [23:0]              result_21_r_c [15:0];  // Q21·w21_R通道
-wire    [23:0]              result_21_g_c [15:0];  // Q21·w21_G通道
-wire    [23:0]              result_21_b_c [15:0];  // Q21·w21_B通道
-wire    [23:0]              result_22_r_c [15:0];  // Q22·w22_R通道
-wire    [23:0]              result_22_g_c [15:0];  // Q22·w22_G通道
-wire    [23:0]              result_22_b_c [15:0];  // Q22·w22_B通道
+(* use_dsp = "yes" *) wire    [13:0]              result_11_r_c [15:0];  // Q11·w11_R通道
+(* use_dsp = "yes" *) wire    [13:0]              result_11_g_c [15:0];  // Q11·w11_G通道
+(* use_dsp = "yes" *) wire    [13:0]              result_11_b_c [15:0];  // Q11·w11_B通道
+(* use_dsp = "yes" *) wire    [13:0]              result_12_r_c [15:0];  // Q12·w12_R通道
+(* use_dsp = "yes" *) wire    [13:0]              result_12_g_c [15:0];  // Q12·w12_G通道
+(* use_dsp = "yes" *) wire    [13:0]              result_12_b_c [15:0];  // Q12·w12_B通道
+(* use_dsp = "yes" *) wire    [13:0]              result_21_r_c [15:0];  // Q21·w21_R通道
+(* use_dsp = "yes" *) wire    [13:0]              result_21_g_c [15:0];  // Q21·w21_G通道
+(* use_dsp = "yes" *) wire    [13:0]              result_21_b_c [15:0];  // Q21·w21_B通道
+(* use_dsp = "yes" *) wire    [13:0]              result_22_r_c [15:0];  // Q22·w22_R通道
+(* use_dsp = "yes" *) wire    [13:0]              result_22_g_c [15:0];  // Q22·w22_G通道
+(* use_dsp = "yes" *) wire    [13:0]              result_22_b_c [15:0];  // Q22·w22_B通道
 
 // 乘法结果寄存器
-reg     [23:0]              result_11_r [15:0];  // Q11·w11_R通道
-reg     [23:0]              result_11_g [15:0];  // Q11·w11_G通道
-reg     [23:0]              result_11_b [15:0];  // Q11·w11_B通道
-reg     [23:0]              result_12_r [15:0];  // Q12·w12_R通道
-reg     [23:0]              result_12_g [15:0];  // Q12·w12_G通道
-reg     [23:0]              result_12_b [15:0];  // Q12·w12_B通道
-reg     [23:0]              result_21_r [15:0];  // Q21·w21_R通道
-reg     [23:0]              result_21_g [15:0];  // Q21·w21_G通道
-reg     [23:0]              result_21_b [15:0];  // Q21·w21_B通道
-reg     [23:0]              result_22_r [15:0];  // Q22·w22_R通道
-reg     [23:0]              result_22_g [15:0];  // Q22·w22_G通道
-reg     [23:0]              result_22_b [15:0];  // Q22·w22_B通道
+reg     [13:0]              result_11_r [15:0];  // Q11·w11_R通道
+reg     [13:0]              result_11_g [15:0];  // Q11·w11_G通道
+reg     [13:0]              result_11_b [15:0];  // Q11·w11_B通道
+reg     [13:0]              result_12_r [15:0];  // Q12·w12_R通道
+reg     [13:0]              result_12_g [15:0];  // Q12·w12_G通道
+reg     [13:0]              result_12_b [15:0];  // Q12·w12_B通道
+reg     [13:0]              result_21_r [15:0];  // Q21·w21_R通道
+reg     [13:0]              result_21_g [15:0];  // Q21·w21_G通道
+reg     [13:0]              result_21_b [15:0];  // Q21·w21_B通道
+reg     [13:0]              result_22_r [15:0];  // Q22·w22_R通道
+reg     [13:0]              result_22_g [15:0];  // Q22·w22_G通道
+reg     [13:0]              result_22_b [15:0];  // Q22·w22_B通道
 
 genvar m;
 generate
     for (m = 0; m < 16; m = m + 1) begin: multiply_stage
         // Q11 三个通道分别乘以权重
         assign result_11_r_c[m] = q11_val[m][23:16] * weight_11[m];
-        assign result_11_g_c[m] = q11_val[m][15:8] * weight_11[m];
-        assign result_11_b_c[m] = q11_val[m][7:0] * weight_11[m];
+        (* use_dsp = "yes" *) assign result_11_g_c[m] = q11_val[m][15:8] * weight_11[m];
+        (* use_dsp = "yes" *) assign result_11_b_c[m] = q11_val[m][7:0] * weight_11[m];
         // Q12 三个通道分别乘以权重
-        assign result_12_r_c[m] = q12_val[m][23:16] * weight_12[m];
-        assign result_12_g_c[m] = q12_val[m][15:8] * weight_12[m];
-        assign result_12_b_c[m] = q12_val[m][7:0] * weight_12[m];
+        (* use_dsp = "yes" *) assign result_12_r_c[m] = q12_val[m][23:16] * weight_12[m];
+        (* use_dsp = "yes" *) assign result_12_g_c[m] = q12_val[m][15:8] * weight_12[m];
+        (* use_dsp = "yes" *) assign result_12_b_c[m] = q12_val[m][7:0] * weight_12[m];
         // Q21 三个通道分别乘以权重
-        assign result_21_r_c[m] = q21_val[m][23:16] * weight_21[m];
-        assign result_21_g_c[m] = q21_val[m][15:8] * weight_21[m];
-        assign result_21_b_c[m] = q21_val[m][7:0] * weight_21[m];
+        (* use_dsp = "yes" *) assign result_21_r_c[m] = q21_val[m][23:16] * weight_21[m];
+        (* use_dsp = "yes" *) assign result_21_g_c[m] = q21_val[m][15:8] * weight_21[m];
+        (* use_dsp = "yes" *) assign result_21_b_c[m] = q21_val[m][7:0] * weight_21[m];
         // Q22 三个通道分别乘以权重
-        assign result_22_r_c[m] = q22_val[m][23:16] * weight_22[m];
-        assign result_22_g_c[m] = q22_val[m][15:8] * weight_22[m];
-        assign result_22_b_c[m] = q22_val[m][7:0] * weight_22[m];
+        (* use_dsp = "yes" *) assign result_22_r_c[m] = q22_val[m][23:16] * weight_22[m];
+        (* use_dsp = "yes" *) assign result_22_g_c[m] = q22_val[m][15:8] * weight_22[m];
+        (* use_dsp = "yes" *) assign result_22_b_c[m] = q22_val[m][7:0] * weight_22[m];
     end
 endgenerate
 
@@ -433,18 +432,18 @@ generate
     for (r = 0; r < 16; r = r + 1) begin: result_reg
         always @(posedge clk or negedge rst_n) begin
             if (!rst_n) begin
-                result_11_r[r] <= #0.1 24'd0;
-                result_11_g[r] <= #0.1 24'd0;
-                result_11_b[r] <= #0.1 24'd0;
-                result_12_r[r] <= #0.1 24'd0;
-                result_12_g[r] <= #0.1 24'd0;
-                result_12_b[r] <= #0.1 24'd0;
-                result_21_r[r] <= #0.1 24'd0;
-                result_21_g[r] <= #0.1 24'd0;
-                result_21_b[r] <= #0.1 24'd0;
-                result_22_r[r] <= #0.1 24'd0;
-                result_22_g[r] <= #0.1 24'd0;
-                result_22_b[r] <= #0.1 24'd0;
+                result_11_r[r] <= #0.1 14'd0;
+                result_11_g[r] <= #0.1 14'd0;
+                result_11_b[r] <= #0.1 14'd0;
+                result_12_r[r] <= #0.1 14'd0;
+                result_12_g[r] <= #0.1 14'd0;
+                result_12_b[r] <= #0.1 14'd0;
+                result_21_r[r] <= #0.1 14'd0;
+                result_21_g[r] <= #0.1 14'd0;
+                result_21_b[r] <= #0.1 14'd0;
+                result_22_r[r] <= #0.1 14'd0;
+                result_22_g[r] <= #0.1 14'd0;
+                result_22_b[r] <= #0.1 14'd0;
             end
             else if (resize_status) begin
                 result_11_r[r] <= #0.1 result_11_r_c[r];
@@ -495,11 +494,11 @@ genvar a;
 generate
     for (a = 0; a < 16; a = a + 1) begin: add_stage
         // R通道: 四个加权值的高8位相加
-        assign result_r_c[a] = result_11_r[a][23:16] + result_12_r[a][23:16] + result_21_r[a][23:16] + result_22_r[a][23:16];
+        assign result_r_c[a] = result_11_r[a][13:6] + result_12_r[a][13:6] + result_21_r[a][13:6] + result_22_r[a][13:6];
         // G通道: 四个加权值的高8位相加
-        assign result_g_c[a] = result_11_g[a][23:16] + result_12_g[a][23:16] + result_21_g[a][23:16] + result_22_g[a][23:16];
+        assign result_g_c[a] = result_11_g[a][13:6] + result_12_g[a][13:6] + result_21_g[a][13:6] + result_22_g[a][13:6];
         // B通道: 四个加权值的高8位相加
-        assign result_b_c[a] = result_11_b[a][23:16] + result_12_b[a][23:16] + result_21_b[a][23:16] + result_22_b[a][23:16];
+        assign result_b_c[a] = result_11_b[a][13:6] + result_12_b[a][13:6] + result_21_b[a][13:6] + result_22_b[a][13:6];
     end
 endgenerate
 

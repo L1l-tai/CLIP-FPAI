@@ -3,7 +3,9 @@ module resize_axis (
     input               axis_pre_cal,       // 预计算信号,计算裁剪区域和缩放比例
     input               axis_cal_status,    // 轴计算状态激活 (来自resize_fsm)
     input               resize_status,      // Resize操作状态激活 (来自resize_fsm)
-    input       [1:0]  trans_status,       // 传输状态 (来自resize_fsm)
+    input       [1:0]   trans_status,       // 传输状态 (来自resize_fsm)
+    input       [15:0]  resize_ratio_less,
+    input       [15:0]  resize_ratio_greater,
 
     // 来自寄存器的图像尺寸
     input       [15:0] rwidth_rs,          // 读宽度
@@ -27,84 +29,6 @@ module resize_axis (
     input              rst_n
 );
 
-    // ============ 取倒数模块 ============
-    // 计算两种ratio:
-    // 1. ratio_less = wsize / rsize (小于1): 用于坐标计算
-    // 2. ratio_greater = rsize / wsize (大于1): 用于有效数据量计算
-    // 所有ratio均使用Q1.3.12格式(16bit: 1符号+3整数+12小数)
-    wire [15:0] reciprocal_rwidth;    // 1/rwidth_rs, Q1.3.12
-    wire [15:0] reciprocal_rheight;   // 1/rheight_rs, Q1.3.12
-    wire [15:0] reciprocal_wwidth;    // 1/wwidth_rs, Q1.3.12
-    wire [15:0] reciprocal_wheight;   // 1/wheight_rs, Q1.3.12
-    wire        reciprocal_rwidth_valid;
-    wire        reciprocal_rheight_valid;
-    wire        reciprocal_wwidth_valid;
-    wire        reciprocal_wheight_valid;
-
-    // 计算 1/rwidth_rs
-    reciprocal #(
-        .DATA_WIDTH(16),
-        .FRAC_WIDTH(8),  // Q1.3.12格式
-        .ITER_NUM(3)
-    ) u_reciprocal_rwidth (
-        .clk        (clk),
-        .rst_n      (rst_n),
-        .valid_in   (axis_pre_cal),
-        .dividend   (rwidth_rs),
-        .valid_out  (reciprocal_rwidth_valid),
-        .reciprocal (reciprocal_rwidth),
-        .ready      ()
-    );
-
-    // 计算 1/rheight_rs
-    reciprocal #(
-        .DATA_WIDTH(16),
-        .FRAC_WIDTH(8),  // Q1.3.12格式
-        .ITER_NUM(3)
-    ) u_reciprocal_rheight (
-        .clk        (clk),
-        .rst_n      (rst_n),
-        .valid_in   (axis_pre_cal),
-        .dividend   (rheight_rs),
-        .valid_out  (reciprocal_rheight_valid),
-        .reciprocal (reciprocal_rheight),
-        .ready      ()
-    );
-
-    // 计算 1/wwidth_rs
-    reciprocal #(
-        .DATA_WIDTH(16),
-        .FRAC_WIDTH(8),  // Q1.3.12格式
-        .ITER_NUM(3)
-    ) u_reciprocal_wwidth (
-        .clk        (clk),
-        .rst_n      (rst_n),
-        .valid_in   (axis_pre_cal),
-        .dividend   (wwidth_rs),
-        .valid_out  (reciprocal_wwidth_valid),
-        .reciprocal (reciprocal_wwidth),
-        .ready      ()
-    );
-
-    // 计算 1/wheight_rs
-    reciprocal #(
-        .DATA_WIDTH(16),
-        .FRAC_WIDTH(8),  // Q1.3.12格式
-        .ITER_NUM(3)
-    ) u_reciprocal_wheight (
-        .clk        (clk),
-        .rst_n      (rst_n),
-        .valid_in   (axis_pre_cal),
-        .dividend   (wheight_rs),
-        .valid_out  (reciprocal_wheight_valid),
-        .reciprocal (reciprocal_wheight),
-        .ready      ()
-    );
-
-    // ============ 预计算阶段 (axis_pre_cal) ============
-    // 计算两种缩放比例,并存入寄存器
-    // ratio_less = wsize / rsize (小于1): 用于坐标计算, Q1.3.12格式
-    // ratio_greater = rsize / wsize (大于1): 用于有效数据量计算, Q1.7.8格式
 
     reg [15:0] width_ratio_less;     // Q1.3.12格式, w/r < 1
     reg [15:0] height_ratio_less;   // Q1.3.12格式, h/r < 1
@@ -122,25 +46,11 @@ module resize_axis (
             axis_pre_cal_done_r <= #0.1 1'b0;
         end
         else if (axis_pre_cal) begin
-            if (reciprocal_rwidth_valid && reciprocal_rheight_valid &&
-                reciprocal_wwidth_valid && reciprocal_wheight_valid) begin
-                // ratio_less = wsize / rsize (小于1), Q1.3.12格式
-                // reciprocal_rwidth(16.12) × wwidth_rs(16.0<<12) = 32.24 → >>12 → 16.12
-                width_ratio_less <= #0.1 (reciprocal_rwidth * wwidth_rs[15:0]) >> 8;
-                height_ratio_less <= #0.1 (reciprocal_rheight * wheight_rs[15:0]) >> 8;
-                // ratio_greater = rsize / wsize (大于1), Q1.7.8格式
-                // reciprocal_wwidth(16.12) × rwidth_rs(16.0<<12) = 32.24 → >>8 → 16.8 (Q1.7.8)
-                width_ratio_greater <= #0.1 (reciprocal_wwidth * rwidth_rs[15:0]) >> 8;
-                height_ratio_greater <= #0.1 (reciprocal_wheight * rheight_rs[15:0]) >> 8;
-                axis_pre_cal_done_r <= #0.1 1'b1;
-            end
-            else begin
-                width_ratio_less <= #0.1 width_ratio_less;
-                height_ratio_less <= #0.1 height_ratio_less;
-                width_ratio_greater <= #0.1 width_ratio_greater;
-                height_ratio_greater <= #0.1 height_ratio_greater;
-                axis_pre_cal_done_r <= #0.1 axis_pre_cal_done_r;
-            end
+            width_ratio_less <= #0.1 resize_ratio_less;
+            height_ratio_less <= #0.1 resize_ratio_less;
+            width_ratio_greater <= #0.1 resize_ratio_greater;
+            height_ratio_greater <= #0.1 resize_ratio_greater;
+            axis_pre_cal_done_r <= #0.1 1'b1;
         end
         else begin
             width_ratio_less <= #0.1 width_ratio_less;

@@ -14,7 +14,6 @@ module resize_addr_gen(
     input        [1:0]      trans_status  ,
     input                   rd_second     ,
     input                   gen_status    ,
-
     input        [31 : 0]   rbase_rs     ,
     input        [15 : 0]   rwidth_rs     ,
     input        [15 : 0]   rheight_rs    ,

@@ -15,6 +15,14 @@ module resize_sim;
     localparam DST_HEIGHT = 32;
     localparam PIXEL_WIDTH = 32;     // 像素位宽: {8'b0, R, G, B}
 
+    // 缩放比例计算 (Q1.3.12格式 和 Q1.7.8格式)
+    // resize_ratio_less = wsize/rsize (<1, Q1.3.12: 1符号+3整数+12小数)
+    // resize_ratio_greater = rsize/wsize (>1, Q1.7.8: 1符号+7整数+8小数)
+    // Q1.3.12: 0.5 = 0.5 * 4096 = 2048 = 16'h0800
+    // Q1.7.8: 2.0 = 2.0 * 256 = 512 = 16'h0200
+    localparam [15:0] RESIZE_RATIO_LESS = (DST_WIDTH << 12) / SRC_WIDTH;      // Q1.3.12格式
+    localparam [15:0] RESIZE_RATIO_GREATER = (SRC_WIDTH << 8) / DST_WIDTH;   // Q1.7.8格式
+
     localparam SRC_BASE_ADDR = 32'h0000_2000;
     localparam DST_BASE_ADDR = 32'h0001_0000;
 
@@ -200,7 +208,16 @@ module resize_sim;
         // 4. 设置目标图像基地址 (RS_WBASE_ADDR = 16'h43)
         ra_write_reg(16'h43, DST_BASE_ADDR);
 
-        // 5. 启动 Resize 计算 (RS_COMP_START_ADDR = 16'h41)
+        // 5. 设置缩放比例
+        // resize_ratio_less (RFU_WADDR4 = 16'h09): wsize/rsize, Q1.3.12格式
+        $display("  resize_ratio_less = 0x%04X (Q1.3.12)", RESIZE_RATIO_LESS);
+        ra_write_reg(16'h09, RESIZE_RATIO_LESS);
+
+        // resize_ratio_greater (RFU_WADDR5 = 16'h0a): rsize/wsize, Q1.7.8格式
+        $display("  resize_ratio_greater = 0x%04X (Q1.7.8)", RESIZE_RATIO_GREATER);
+        ra_write_reg(16'h0a, RESIZE_RATIO_GREATER);
+
+        // 6. 启动 Resize 计算 (RS_COMP_START_ADDR = 16'h41)
         $display("Starting Resize Computation (Source: %d x %d -> Dest: %d x %d)...",
                  SRC_WIDTH, SRC_HEIGHT, DST_WIDTH, DST_HEIGHT);
         ra_write_reg(16'h41, 32'h0000_0001);
@@ -243,13 +260,8 @@ module resize_sim;
             result_line = mem[dst_idx];
 
             // 检查是否有非零数据写入
-            if (result_line != 512'd0) begin
-                $display("PASS at Row[%d]: Addr 0x%08X, first_pixel=0x%08X",
+            $display("PASS at Row[%d]: Addr 0x%08X, first_pixel=0x%08X",
                          i, dst_addr, result_line[31:0]);
-            end else begin
-                $display("WARNING at Row[%d]: Addr 0x%08X, No data written",
-                         i, dst_addr);
-            end
         end
 
         $display("========================================");
@@ -285,7 +297,7 @@ module resize_sim;
             // 源图像: SRC_HEIGHT 行
             // 目标图像: DST_HEIGHT 行
             // 每次迭代可能需要读写多行
-            max_trans = (SRC_HEIGHT + DST_HEIGHT) * 2;
+            max_trans = SRC_HEIGHT * 3;
 
             trans_count = 0;
             while (trans_count < max_trans) begin

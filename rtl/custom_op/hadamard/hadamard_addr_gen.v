@@ -16,6 +16,7 @@ module hadamard_addr_gen(
     input        [1:0]      trans_status  ,
     input                   gen_status    ,
     input        [31:0]     hd_data_width ,
+    input                   cal_percision ,
 
     input        [31 : 0]   arbase_hd     ,
     //需要读写的总数据包数(512bit)
@@ -165,19 +166,19 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 
-assign fwht_num = wrsize_hd / FWHT_WIDTH;
+assign fwht_num = cal_percision ? wrsize_hd / FWHT_WIDTH : wrsize_hd / (FWHT_WIDTH - 1);
 
 assign rd_pos = ~trans_status_reg[0] & trans_status[0];
 assign wr_pos = ~trans_status_reg[1] & trans_status[1];
 
-assign arbase_offset_c = hd_rd_cnt << FWHT_SHIFT ;  // 64 * (32 / 8) = 256 BYTE
+assign arbase_offset_c = cal_percision ? hd_rd_cnt << FWHT_SHIFT : hd_rd_cnt << (FWHT_SHIFT - 1);  // 64 * (32 / 8) = 256 BYTE
 // 修正：直接使用组合逻辑偏移量，避免额外寄存器延迟导致地址错位
 assign arbase_hd_gen_c = arbase_hd_reg + arbase_offset_c;
-assign arsize_hd_gen_c = FWHT_WIDTH;
+assign arsize_hd_gen_c = cal_percision ? FWHT_WIDTH : FWHT_WIDTH -1;
 
-assign awbase_offset_c = hd_wr_cnt << FWHT_SHIFT;
+assign awbase_offset_c = cal_percision ? hd_wr_cnt << FWHT_SHIFT : hd_wr_cnt << (FWHT_SHIFT - 1);
 // 修正：直接使用组合逻辑偏移量
 assign awbase_hd_gen_c = awbase_hd_reg + awbase_offset_c;
-assign awsize_hd_gen_c = FWHT_WIDTH;
+assign awsize_hd_gen_c = cal_percision ? FWHT_WIDTH : FWHT_WIDTH -1;
 
 endmodule

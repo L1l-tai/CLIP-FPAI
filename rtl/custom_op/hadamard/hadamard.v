@@ -242,7 +242,7 @@ endgenerate
 // s_valid[0] directly from fwht_status, s_valid[1-6] registered
 
 assign w_reg_valid = s6_valid;
-assign w_reg_valid_pos = w_reg_valid & ~w_reg_valid_r;
+assign w_reg_valid_pos = s6_valid_pos_r;
 assign s_valid_out_all = &s_valid_out;
 
 assign s0_valid = fwht_status_r;
@@ -342,6 +342,9 @@ generate
         wire        s_valid_in;
         wire [15:0] result_add;
         wire [15:0] result_sub;
+        reg  [15:0] op_a_r;
+        reg  [15:0] op_b_r;
+        reg  s_valid_in_r;
         assign op_a = s5_valid_r ? stage5[LO5] :
                       s4_valid_r ? stage4[LO4] :
                       s3_valid_r ? stage3[LO3] :
@@ -360,6 +363,20 @@ generate
         assign s_valid_in = s0_valid_pos_r | s1_valid_pos_r | s2_valid_pos_r | 
                             s3_valid_pos_r | s4_valid_pos_r | s5_valid_pos_r ;
 
+
+        always @(posedge clk or negedge rst_n) begin
+            if(!rst_n)begin
+                op_a_r <= 16'b0;
+                op_b_r <= 16'b0;
+                s_valid_in_r <= 1'b0;
+            end
+            else begin
+                op_a_r <= op_a;
+                op_b_r <= op_b;
+                s_valid_in_r <= s_valid_in; 
+            end
+        end
+
         fwht_pub #(
             .EXP_W(5),
             .MAN_W(10),
@@ -368,9 +385,9 @@ generate
             .clk            (clk),
             .rst_n          (rst_n),
             .cal_percision  (cal_percision),
-            .op_a           (op_a),
-            .op_b           (op_b),
-            .valid_in       (s_valid_in),
+            .op_a           (op_a_r),
+            .op_b           (op_b_r),
+            .valid_in       (s_valid_in_r),
             .result_add     (result_add),
             .result_sub     (result_sub),
             .valid_out      (s_valid_out[i])
