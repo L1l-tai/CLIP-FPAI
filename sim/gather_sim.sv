@@ -228,20 +228,12 @@ module gather_sim;
         ra_write_reg(16'h06, DATA_WIDTH_BEATS);
 
         // 3. 设置 Read Indices Base & Size (rbase1/rsize1, Addr 0x01)
-        // Indices 总共 80 Bytes. 
-        // DMA Beat = 64 Bytes.
-        // 需要 2 个 Beats (Line 0 full, Line 1 partial).
-        // Size = 2.
         ra_write_reg(16'h01, {16'd2, IDX_BASE_ADDR[15:0]});
 
         // 4. 设置 Read Data Base & Size (rbase2/rsize2, Addr 0x03)
-        // 修改: Size = INDICES_LEN * DATA_WIDTH_BEATS
-        // 20 * 8 = 160 Beats.
         ra_write_reg(16'h03,  SRC_BASE_ADDR);
 
         // 5. 设置 Write Base & Size (wbase1/wsize1, Addr 0x02)
-        // 修改: Size = INDICES_LEN * DATA_WIDTH_BEATS
-        // 输出也是同样大小的数据量
         ra_write_reg(16'h02,  DST_BASE_ADDR);
 
         // 6. 启动计算 (COMP_START_ADDR = 16'h00)
