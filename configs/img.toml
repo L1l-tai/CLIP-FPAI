@@ -4,14 +4,15 @@ framework = "onnx"
 # ViT-B/32 标准输入是 224x224
 inputs = [ 1, 224, 224, 3]
 inputs_layout = "NHWC"
-inputs_dtype = "UINT8"    
+inputs_dtype = "FP32"    
 pre_method = "nop"
+pre_mean = [ 0,0,0 ] 
+pre_scale = [ 1,1,1 ]
 # CLIP 官方预处理：(x - mean) / std
 # 这里的 pre_scale = 1/std，均值和标准差已映射到 0-255
-pre_mean = [ 122.77, 116.75, 104.09 ]
-pre_scale = [ 68.50, 66.63, 70.32 ]
-channel_swap = [ 2, 1, 0 ] # CLIP 官方为 RGB，若输入 BGR 图片则需交换
-network = "./fmodel/clip_vit_hadamard_optimized.onnx"
+
+channel_swap = [ 0, 1, 2 ] # CLIP 官方为 RGB，若输入 BGR 图片则需交换
+network = "./fmodel/clip_vit_b32.onnx"
 jr_path = "imodel/vit_b32/"
 target = "zhuge"    
 
@@ -19,10 +20,11 @@ target = "zhuge"
 target = "zhuge"
 json = "imodel/vit_b32/clip_vit_b32_parsed.json"
 raw = "imodel/vit_b32/clip_vit_b32_parsed.raw"
+log_path = "./imodel/optimize"	
 jr_path = "imodel/vit_b32/"
+pass_off = "ReTurnOfmLayoutPass"
 
 [quantize]
-forward_mode = "image"
 saturation = "kld"  # Transformer 模型强烈建议使用 kld
 forward_dir = "./qtset/coco"
 forward_list = "./qtset/coco.txt"
@@ -30,18 +32,15 @@ qdtype = "int8"
 json = "imodel/vit_b32/clip_vit_b32_optimized.json"
 raw = "imodel/vit_b32/clip_vit_b32_optimized.raw"
 jr_path = "imodel/vit_b32/"
-per = "tensor"
+per = "channel"
 target = "zhuge"
-mix_precision = "auto"
-quant_autotune_config = "./configs/quant_autotune_config.toml"
 
 [adapt]
 target = "zhuge"
-json = "imodel/vit_b32/clip_vit_b32_quantized.json"
-raw = "imodel/vit_b32/clip_vit_b32_quantized.raw"
+json = "imodel/vit_b32/clip_vit_b32_optimized.json"
+raw = "imodel/vit_b32/clip_vit_b32_optimized.raw"
 jr_path = "imodel/vit_b32/"
-# 注意：CLIP 是特征提取模型，通常不需要类似 YOLO 的 DetPost 后处理插件
-# 如果只是为了跑通流程，可以不加 pass_on；如果编译器报错，请咨询是否需要特定的 ViT 后处理
+
 
 [generate]
 json = "imodel/vit_b32/clip_vit_b32_adapted.json"
@@ -49,10 +48,8 @@ raw = "imodel/vit_b32/clip_vit_b32_adapted.raw"
 jr_path = "imodel/vit_b32/"
 
 [run]
-log_time = true
-log_io = true
-dump_format = "SFB"
 json = "imodel/vit_b32/clip_vit_b32_ZG.json"
 raw = "imodel/vit_b32/clip_vit_b32_ZG.raw"
-input = "./qtset/images/test_image.jpg" # 确保该路径下有一张真实存在的测试图
-log_path = "./logs/"
+input = "./qtset/coco/000000000285.jpg"
+log_time = true
+log_io = true

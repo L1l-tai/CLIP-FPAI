@@ -1,45 +1,17 @@
-[parse]
-net_name = "clip_text_encoder"
-framework = "onnx"
-target = "zhuge"
-
-# 1. 输入设置：修正为 1, 512 以匹配你的 ONNX 模型
-# 这里的 512 必须与 Netron 中看到的维度完全一致
-inputs = [1, 512]
-inputs_dtype = "FP32"
-inputs_layout = "FD"
-
-# 2. 预处理：继续保持 "nop" (No Operation)
-# 文本数据通常在 Python 端完成 Tokenize 和 Embedding，不需要编译器的图像预处理
-pre_method = "nop"
-pre_scale = "nop"
-pre_mean = "nop"
-channel_swap = "nop"
-
-# 3. 路径配置
-network = "./fmodel/text_model.onnx"
-jr_path = "imodel/text_encoder/"
-
 [optimize]
 target = "zhuge"
 json = "imodel/text_encoder/clip_text_encoder_parsed.json"
 raw = "imodel/text_encoder/clip_text_encoder_parsed.raw"
 jr_path = "imodel/text_encoder/"
+pass_on = "GatherOP.ReplaceUnsupportWithGather"	#
 
-[quantize]
-# 这里是重点：针对 Transformer 的量化策略
-forward_mode = "tensor" # 建议尝试 "tensor"，因为文本数据不是真正的图片像素
-saturation = "kld"      # KLD (KL 散度) 确实比直接截断更适合处理 Transformer 的激活值分布
-forward_dir = "./qtset/text_data"
-forward_list = "./qtset/text_list.txt"
-qdtype = "int8"
-per = "channel"         # 必须用 per-channel，否则 Transformer 的精度会崩掉
+[adapt]
 target = "zhuge"
 json = "imodel/text_encoder/clip_text_encoder_optimized.json"
 raw = "imodel/text_encoder/clip_text_encoder_optimized.raw"
 jr_path = "imodel/text_encoder/"
 
 [generate]
-json = "imodel/text_encoder/clip_text_encoder_quantized.json"
-raw = "imodel/text_encoder/clip_text_encoder_quantized.raw"
+json = "imodel/text_encoder/clip_text_encoder_adapted.json"
+raw = "imodel/text_encoder/clip_text_encoder_adapted.raw"
 jr_path = "imodel/text_encoder/"

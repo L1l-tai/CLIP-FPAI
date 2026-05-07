@@ -1,230 +1,176 @@
 import numpy as np
-import torch
 
-def gather_naive(data: np.ndarray, indices: np.ndarray, axis: int = 0) -> np.ndarray:
+
+def gather_host_style(data: np.ndarray, indices: np.ndarray, axis: int = 0) -> np.ndarray:
     """
-    Gather 算子的基础实现（易于理解）
-    
-    参数:
-        data: 输入数据张量，形状任意
-        indices: 索引张量，形状任意
-        axis: 沿哪个轴进行 gather，默认 0
-    
-    返回:
-        output: gather 后的张量
-    
-    示例:
-        data = [[1, 2, 3],      # shape: [3, 3]
-                [4, 5, 6],
-                [7, 8, 9]]
-        
-        indices = [0, 2]        # shape: [2]
-        
-        output = gather(data, indices, axis=0)
-        # output = [[1, 2, 3],   # shape: [2, 3]
-        #           [7, 8, 9]]
+    与当前 C++ Host Gather 实现对应的 Python 版本
+
+    当前约束：
+    - data: embedding table / Params
+    - indices: 2D，形状 [1, N]
+    - axis: 默认 0
+    - output_shape: data_shape 的 axis 维替换为 indices_shape[1]
+
+    例如：
+        data.shape    = [49408, 512]
+        indices.shape = [1, 77]
+        axis = 0
+        output.shape  = [77, 512]
     """
-    # 1. 验证 axis 合法性
-    axis = axis % data.ndim  # 支持负数 axis
-    assert 0 <= axis < data.ndim, f"axis {axis} 超出范围 [0, {data.ndim})"
-    
-    # 2. 获取维度信息
+    data = np.asarray(data, dtype=np.float32)
+    indices = np.asarray(indices, dtype=np.int64)
+
+    if data.ndim == 0:
+        raise ValueError("data rank must be > 0")
+
+    if indices.ndim != 2:
+        raise ValueError(f"Current implementation only supports 2D indices, got rank={indices.ndim}")
+
+    data_rank = data.ndim
+    if axis < 0:
+        axis += data_rank
+    if not (0 <= axis < data_rank):
+        raise ValueError(f"axis {axis} out of range for rank {data_rank}")
+
     data_shape = data.shape
     indices_shape = indices.shape
-    
-    # 3. 计算输出形状
-    # output_shape = data_shape[:axis] + indices_shape + data_shape[axis+1:]
-    output_shape = data_shape[:axis] + indices_shape + data_shape[axis+1:]
-    print(output_shape)
-    
-    # 4. 创建输出张量
-    output = np.zeros(output_shape, dtype=data.dtype)
-    
-    # 5. 逐元素 gather（基础版本，易于理解）
-    if indices.ndim == 0:
-        # indices 是标量
-        idx = indices.item()
-        # 构建切片对象
-        slices = [slice(None)] * data.ndim
-        slices[axis] = idx
-        output = data[tuple(slices)]
-    else:
-        # indices 是张量，需要遍历
-        for idx in np.ndindex(indices_shape):
-            # 获取当前索引位置的值
-            index_val = indices[idx]
-            
-            # 构建输出张量的索引
-            # output 的索引 = indices 的索引 + data 其他维度的索引
-            output_slices = []
-            data_slices = []
-            
-            # axis 之前的维度：使用 indices 的索引
-            for i in range(axis):
-                output_slices.append(idx[i] if i < len(idx) else 0)
-                data_slices.append(slice(None))
-            
-            # axis 维度：使用 indices 的值
-            output_slices.append(slice(None) if axis < len(idx) else idx)
-            data_slices.append(index_val)
-            
-            # axis 之后的维度：使用 indices 的索引
-            for i in range(axis + 1, data.ndim):
-                if len(idx) > i:
-                    output_slices.append(idx[i])
-                data_slices.append(slice(None))
-            
-            # 简化：直接使用 numpy 高级索引
-            slices = [slice(None)] * data.ndim
-            slices[axis] = index_val
-            
-            # 计算 output 中的位置
-            output_idx = idx if axis >= len(indices_shape) else idx
-            
-            output[output_idx] = data[tuple(slices)]
-    
-    return output
-    
-def gather_vectorized(data: np.ndarray, indices: np.ndarray, axis: int = 0) -> np.ndarray:
-    """
-    Gather 算子的向量化实现（高效，推荐）
-    
-    利用 NumPy 的高级索引功能，避免 Python 循环
-    
-    参数:
-        data: 输入数据张量
-        indices: 索引张量
-        axis: 沿哪个轴进行 gather
-    
-    返回:
-        output: gather 后的张量
-    """
-    # 1. 验证 axis
-    axis = axis % data.ndim
-    assert 0 <= axis < data.ndim, f"axis {axis} 超出范围"
-    
-    # 2. 使用 np.take 实现（最简洁）
-    output = np.take(data, indices, axis=axis)
-    
+
+    # 与 C++ tinfer / forward 保持一致
+    output_shape = list(data_shape)
+    output_shape[axis] = indices_shape[1]
+    output = np.empty(output_shape, dtype=data.dtype)
+
+    indices_total = int(np.prod(indices_shape))
+
+    pre_shape = 1
+    for i in range(axis):
+        pre_shape *= data_shape[i]
+
+    post_shape = 1
+    for i in range(axis + 1, data_rank):
+        post_shape *= data_shape[i]
+
+    # 拉平成便于和 C++ 的 src_idx / dst_idx 对齐
+    data_flat = data.reshape(-1)
+    output_flat = output.reshape(-1)
+    indices_flat = indices.reshape(-1)
+
+    axis_dim = data_shape[axis]
+
+    for pre_idx in range(pre_shape):
+        for idx_idx in range(indices_total):
+            gather_idx = int(indices_flat[idx_idx])
+
+            if not (0 <= gather_idx < axis_dim):
+                raise IndexError(
+                    f"Gather index {gather_idx} out of range [0, {axis_dim})"
+                )
+
+            for post_idx in range(post_shape):
+                src_idx = (
+                    pre_idx * (axis_dim * post_shape)
+                    + gather_idx * post_shape
+                    + post_idx
+                )
+
+                dst_idx = (
+                    pre_idx * (indices_total * post_shape)
+                    + idx_idx * post_shape
+                    + post_idx
+                )
+
+                output_flat[dst_idx] = data_flat[src_idx]
+
     return output
 
 
-def gather_manual(data: np.ndarray, indices: np.ndarray, axis: int = 0) -> np.ndarray:
+def gather_reference(data: np.ndarray, indices: np.ndarray, axis: int = 0) -> np.ndarray:
     """
-    Gather 算子的手动实现（深入理解原理）
-    
-    不依赖 np.take，手动实现索引逻辑
+    参考实现，使用 numpy.take
+    语义上与 gather_host_style 对齐
     """
-    # 1. 验证
-    axis = axis % data.ndim
-    indices = np.asarray(indices)
-    
-    # 2. 计算输出形状
-    data_shape = list(data.shape)
-    indices_shape = list(indices.shape)
-    output_shape = data_shape[:axis] + indices_shape + data_shape[axis+1:]
-    
-    # 3. 转置 data，使 axis 维度移到第 0 维
-    if axis != 0:
-        # 将 axis 维度移到最前面
-        perm = [axis] + list(range(0, axis)) + list(range(axis+1, data.ndim))
-        data_transposed = np.transpose(data, perm)
-    else:
-        data_transposed = data
-    
-    # 4. 使用 data_transposed[indices] 进行 gather
-    # 此时 indices 索引的是第 0 维
-    output_transposed = data_transposed[indices]
-    
-    # 5. 转置回原始顺序
-    if axis != 0:
-        # 计算逆置换
-        inv_perm = [0] * data.ndim
-        for i, p in enumerate(perm):
-            inv_perm[p] = i
-        # output_transposed 的形状是 [indices_shape] + [data_shape 去掉 axis]
-        # 需要重新排列
-        new_perm = list(range(len(indices_shape), len(indices_shape) + axis)) + \
-                   list(range(0, len(indices_shape))) + \
-                   list(range(len(indices_shape) + axis, data.ndim - 1 + len(indices_shape)))
-        output = np.transpose(output_transposed, new_perm)
-    else:
-        output = output_transposed
-    
-    return output
+    data = np.asarray(data, dtype=np.float32)
+    indices = np.asarray(indices, dtype=np.int64)
 
-def test_gather_basic():
-    """测试基础功能"""
+    if axis < 0:
+        axis += data.ndim
+
+    return np.take(data, indices.reshape(-1), axis=axis)
+
+
+def test_small_case():
     print("=" * 60)
-    print("测试 1: 基础 Gather (axis=0)")
+    print("test_small_case")
     print("=" * 60)
-    
-    data = np.array([[1, 2, 3],
-                     [4, 5, 6],
-                     [7, 8, 9]])
-    indices = np.array([0, 2])
-    
-    output = gather_naive(data, indices, axis=0)
-    
-    print(f"data 形状：{data.shape}")
-    print(f"indices 形状：{indices.shape}")
-    print(f"output 形状：{output.shape}")
-    print(f"output:\n{output}")
-    
-    expected = np.array([[1, 2, 3],
-                         [7, 8, 9]])
-    assert np.array_equal(output, expected), "测试失败！"
-    print("✓ 测试通过\n")
+
+    data = np.array([
+        [1, 2, 3, 4],
+        [10, 20, 30, 40],
+        [100, 200, 300, 400],
+        [1000, 2000, 3000, 4000],
+    ], dtype=np.float32)  # shape [4, 4]
+
+    indices = np.array([[0, 2, 3]], dtype=np.int64)  # shape [1, 3]
+
+    out1 = gather_host_style(data, indices, axis=0)
+    out2 = gather_reference(data, indices, axis=0)
+
+    print("data.shape   =", data.shape)
+    print("indices.shape=", indices.shape)
+    print("out.shape    =", out1.shape)
+    print(out1)
+
+    assert np.allclose(out1, out2), "host_style 与 reference 不一致"
+    print("✓ test_small_case passed\n")
 
 
-def test_gather_axis():
-    """测试不同 axis"""
+def test_clip_like_case():
     print("=" * 60)
-    print("测试 3: 不同 axis 参数")
+    print("test_clip_like_case")
     print("=" * 60)
-    
-    data = np.arange(36).reshape(3, 3, 4)
-    indices = np.array([0, 2])
-    
-    for axis in range(3):
-        output = gather_vectorized(data, indices, axis=axis)
-        print(f"axis={axis}: data{data.shape} + indices{indices.shape} → output{output.shape}")
-    
-    print("✓ 测试通过\n")
+
+    vocab_size = 49408
+    hidden_dim = 512
+    seq_len = 77
+
+    # 模拟 embedding table
+    rng = np.random.default_rng(0)
+    data = rng.standard_normal((vocab_size, hidden_dim), dtype=np.float32)
+
+    # 模拟 tokenizer 输出
+    indices = np.array([[
+        49406, 320, 1125, 539, 320, 1769, 4629,
+        49407, 49407, 49407, 49407, 49407, 49407, 49407, 49407,
+        49407, 49407, 49407, 49407, 49407, 49407, 49407, 49407,
+        49407, 49407, 49407, 49407, 49407, 49407, 49407, 49407,
+        49407, 49407, 49407, 49407, 49407, 49407, 49407, 49407,
+        49407, 49407, 49407, 49407, 49407, 49407, 49407, 49407,
+        49407, 49407, 49407, 49407, 49407, 49407, 49407, 49407,
+        49407, 49407, 49407, 49407, 49407, 49407, 49407, 49407,
+        49407, 49407, 49407, 49407, 49407, 49407, 49407, 49407,
+        49407, 49407, 49407, 49407, 49407
+    ]], dtype=np.int64)
+
+    assert indices.shape == (1, seq_len)
+
+    out1 = gather_host_style(data, indices, axis=0)
+    out2 = gather_reference(data, indices, axis=0)
+
+    print("data.shape   =", data.shape)
+    print("indices.shape=", indices.shape)
+    print("out.shape    =", out1.shape)
+    print("out min/max  =", out1.min(), out1.max())
+    print("out mean     =", out1.mean())
+    print("first token first 10 values =", out1[0, :10])
+
+    assert out1.shape == (seq_len, hidden_dim)
+    assert np.allclose(out1, out2), "host_style 与 reference 不一致"
+    print("✓ test_clip_like_case passed\n")
 
 
-def test_gather_consistency():
-    """验证不同实现的一致性"""
+if __name__ == "__main__":
+    test_small_case()
+    test_clip_like_case()
     print("=" * 60)
-    print("测试 4: 不同实现的一致性")
+    print("all tests passed")
     print("=" * 60)
-    
-    data = np.random.randn(10, 20, 30).astype(np.float32)
-    indices = np.random.randint(0, 10, (5, 8))
-    
-    output_naive = gather_naive(data, indices, axis=0)
-    output_vec = gather_vectorized(data, indices, axis=0)
-    output_manual = gather_manual(data, indices, axis=0)
-    
-    assert np.allclose(output_naive, output_vec), "naive vs vectorized 不一致"
-    assert np.allclose(output_vec, output_manual), "vectorized vs manual 不一致"
-    
-    print("✓ 所有实现结果一致\n")
-
-
-# ============================================================================
-# 主函数
-# ============================================================================
-
-if __name__ == '__main__':
-    print("\n" + "=" * 60)
-    print("ONNX Gather 算子 Python 实现测试")
-    print("=" * 60 + "\n")
-    
-    test_gather_basic()
-    test_gather_axis()
-    test_gather_consistency()
-    
-    print("=" * 60)
-    print("所有测试完成！")
-    print("=" * 60 + "\n")
