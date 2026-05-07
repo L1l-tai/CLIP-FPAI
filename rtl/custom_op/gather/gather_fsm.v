@@ -1,7 +1,5 @@
 //================================================================================
-// Orgnization   : School of Electronic Science, NUDT
 // File Name     : gather_top.v
-// Author        : Changtai Lin
 // Project       : 
 // Create Date   : 2026.04.10
 // Description   :
@@ -9,7 +7,6 @@
 //--------------------------------------------------------------------------------
 // Modification History :
 // Rev     Date         Who               Description
-// 0.5.0   2021.03.31   Changtai Lin      Modify transformation logic of Gather OP
 //================================================================================
 
 module gather_fsm (

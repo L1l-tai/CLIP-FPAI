@@ -1,7 +1,5 @@
 //================================================================================
-// Orgnization   : School of Electronic Science, NUDT
 // File Name     : resize.v
-// Author        : Changtai Lin
 // Project       : 
 // Create Date   : 2026.04.20
 // Description   :
@@ -9,7 +7,7 @@
 //--------------------------------------------------------------------------------
 // Modification History :
 // Rev     Date         Who               Description
-// 0.5.0   2026.04.28   Changtai Lin      resize logic
+// 0.5.0   2026.04.28              resize logic
 //================================================================================
 
 module resize (

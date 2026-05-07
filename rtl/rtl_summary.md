@@ -24,7 +24,7 @@ rtl/
 - **Hadamard**: 快速沃尔什-哈达玛变换 (FWHT)
 - **Resize**: 双线性插值缩放
 
-👉 详细说明请查看 [custom_op 算子介绍](./custom_op/custom_op_summary.md)
+详细说明请查看 [custom_op 算子介绍](./custom_op/custom_op_summary.md)
 
 `ai7030_edif_top.v`
 

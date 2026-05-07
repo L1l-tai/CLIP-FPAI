@@ -1,7 +1,5 @@
 //================================================================================
-// Orgnization   : School of Electronic Science, NUDT
 // File Name     : resize_fsm.v
-// Author        : Changtai Lin
 // Project       :
 // Create Date   : 2026.04.27
 // Description   : Resize FSM with axis pre-calibration and calibration state

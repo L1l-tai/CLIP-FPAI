@@ -1,147 +1,186 @@
+# CLIP ViT-B/32 FPGA 加速项目
 
-# Model Card: CLIP
+本项目实现 CLIP (Contrastive Language-Image Pre-training) 模型在 FPGA 上的部署加速，采用 Vivado RTL 设计配合自定义算子，支持 INT8 \ FP16 量化推理。
 
-该工程用于CLIP的FPAI实现
+---
 
-Disclaimer: The model card is taken and modified from the official CLIP repository, it can be found [here](https://github.com/openai/CLIP/blob/main/model-card.md).
+## 目录结构
 
-## Model Details
-
-The CLIP model was developed by researchers at OpenAI to learn about what contributes to robustness in computer vision tasks. The model was also developed to test the ability of models to generalize to arbitrary image classification tasks in a zero-shot manner. It was not developed for general model deployment - to deploy models like CLIP, researchers will first need to carefully study their capabilities in relation to the specific context they’re being deployed within.
-
-### Model Date
-
-January 2021
-
-### Model Type
-
-The model uses a ViT-B/32 Transformer architecture as an image encoder and uses a masked self-attention Transformer as a text encoder. These encoders are trained to maximize the similarity of (image, text) pairs via a contrastive loss. 
-
-The original implementation had two variants: one using a ResNet image encoder and the other using a Vision Transformer. This repository has the variant with the Vision Transformer.
-
-
-### Documents
-
-- [Blog Post](https://openai.com/blog/clip/)
-- [CLIP Paper](https://arxiv.org/abs/2103.00020)
-
-
-### Use with Transformers
-
-```python3
-from PIL import Image
-import requests
-
-from transformers import CLIPProcessor, CLIPModel
-
-model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-
-url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-image = Image.open(requests.get(url, stream=True).raw)
-
-inputs = processor(text=["a photo of a cat", "a photo of a dog"], images=image, return_tensors="pt", padding=True)
-
-outputs = model(**inputs)
-logits_per_image = outputs.logits_per_image # this is the image-text similarity score
-probs = logits_per_image.softmax(dim=1) # we can take the softmax to get the label probabilities
+```
+├── rtl/                    # RTL 设计（自定义算子硬件实现）
+├── FPGA/                   # FPGA 工程与 IP 配置
+├── deploy/                 # 模型部署（推理流程、配置文件）
+├── quant_optimize/         # 量化优化工具链
+├── op/                     # 自定义算子替换（ONNX Parser / Pass）
+├── processor/              # CLIP 图像预处理器配置
+├── fmodel/                 # ONNX 模型文件
+├── configs/                # 部署配置文件
+├── sim/                    # 仿真脚本
+└── qtset/                  # 量化校准数据集
 ```
 
-
-## Model Use
-
-### Intended Use
-
-The model is intended as a research output for research communities. We hope that this model will enable researchers to better understand and explore zero-shot, arbitrary image classification. We also hope it can be used for interdisciplinary studies of the potential impact of such models - the CLIP paper includes a discussion of potential downstream impacts to provide an example for this sort of analysis.
-
-#### Primary intended uses
-
-The primary intended users of these models are AI researchers.
-
-We primarily imagine the model will be used by researchers to better understand robustness, generalization, and other capabilities, biases, and constraints of computer vision models.
-
-### Out-of-Scope Use Cases
-
-**Any** deployed use case of the model - whether commercial or not - is currently out of scope. Non-deployed use cases such as image search in a constrained environment, are also not recommended unless there is thorough in-domain testing of the model with a specific, fixed class taxonomy. This is because our safety assessment demonstrated a high need for task specific testing especially given the variability of CLIP’s performance with different class taxonomies. This makes untested and unconstrained deployment of the model in any use case currently potentially harmful. 
-
-Certain use cases which would fall under the domain of surveillance and facial recognition are always out-of-scope regardless of performance of the model. This is because the use of artificial intelligence for tasks such as these can be premature currently given the lack of testing norms and checks to ensure its fair use.
-
-Since the model has not been purposefully trained in or evaluated on any languages other than English, its use should be limited to English language use cases.
-
-
-
-## Data
-
-The model was trained on publicly available image-caption data. This was done through a combination of crawling a handful of websites and using commonly-used pre-existing image datasets such as [YFCC100M](http://projects.dfki.uni-kl.de/yfcc100m/). A large portion of the data comes from our crawling of the internet. This means that the data is more representative of people and societies most connected to the internet which tend to skew towards more developed nations, and younger, male users.
-
-### Data Mission Statement
-
-Our goal with building this dataset was to test out robustness and generalizability in computer vision tasks. As a result, the focus was on gathering large quantities of data from different publicly-available internet data sources. The data was gathered in a mostly non-interventionist manner. However, we only crawled websites that had policies against excessively violent and adult images and allowed us to filter out such content. We do not intend for this dataset to be used as the basis for any commercial or deployed model and will not be releasing the dataset.
-
-
-
-## Performance and Limitations
-
-### Performance
-
-We have evaluated the performance of CLIP on a wide range of benchmarks across a variety of computer vision datasets such as OCR to texture recognition to fine-grained classification. The paper describes model performance on the following datasets:
-
-- Food101
-- CIFAR10   
-- CIFAR100   
-- Birdsnap
-- SUN397
-- Stanford Cars
-- FGVC Aircraft
-- VOC2007
-- DTD
-- Oxford-IIIT Pet dataset
-- Caltech101
-- Flowers102
-- MNIST   
-- SVHN 
-- IIIT5K   
-- Hateful Memes   
-- SST-2
-- UCF101
-- Kinetics700
-- Country211
-- CLEVR Counting
-- KITTI Distance
-- STL-10
-- RareAct
-- Flickr30
-- MSCOCO
-- ImageNet
-- ImageNet-A
-- ImageNet-R
-- ImageNet Sketch
-- ObjectNet (ImageNet Overlap)
-- Youtube-BB
-- ImageNet-Vid
-
-## Limitations
-
-CLIP and our analysis of it have a number of limitations. CLIP currently struggles with respect to certain tasks such as fine grained classification and counting objects. CLIP also poses issues with regards to fairness and bias which we discuss in the paper and briefly in the next section. Additionally, our approach to testing CLIP also has an important limitation- in many cases we have used linear probes to evaluate the performance of CLIP and there is evidence suggesting that linear probes can underestimate model performance.
-
-### Bias and Fairness
-
-We find that the performance of CLIP - and the specific biases it exhibits - can depend significantly on class design and the choices one makes for categories to include and exclude. We tested the risk of certain kinds of denigration with CLIP by classifying images of people from [Fairface](https://arxiv.org/abs/1908.04913) into crime-related and non-human animal categories. We found significant disparities with respect to race and gender. Additionally, we found that these disparities could shift based on how the classes were constructed. (Details captured in the Broader Impacts Section in the paper).
-
-We also tested the performance of CLIP on gender, race and age classification using the Fairface dataset (We default to using race categories as they are constructed in the Fairface dataset.) in order to assess quality of performance across different demographics. We found accuracy >96% across all races for gender classification with ‘Middle Eastern’ having the highest accuracy (98.4%) and ‘White’ having the lowest (96.5%). Additionally, CLIP averaged ~93% for racial classification and ~63% for age classification. Our use of evaluations to test for gender, race and age classification as well as denigration harms is simply to evaluate performance of the model across people and surface potential risks and not to demonstrate an endorsement/enthusiasm for such tasks.
-
----
-tags:
-- vision
-widget:
-- src: https://huggingface.co/datasets/mishig/sample_images/resolve/main/cat-dog-music.png
-  candidate_labels: playing music, playing sports
-  example_title: Cat & Dog
 ---
 
+## 一、rtl — 自定义算子 RTL 设计
 
-## Feedback
+**路径**: `rtl/`
 
-### Where to send questions or comments about the model
+### 1.1 custom_op — 核心硬件算子
 
-Please use [this Google Form](https://forms.gle/Uv7afRH5dvY34ZEs9)
+| 算子 | 路径 | 功能说明 |
+|------|------|----------|
+| **Gather** | `rtl/custom_op/gather/` | 索引聚集 — 根据索引表从 DDR 读取不规则位置数据，实现数据重排列（ViT 图像块重排） |
+| **Hadamard** | `rtl/custom_op/hadamard/` | 快速沃尔什-哈达玛变换 (FWHT) — 6 级蝶形网络，支持 INT8/FP16，用于量化预处理 |
+| **Resize** | `rtl/custom_op/resize_crop/` | 双线性插值缩放 — 三级流水线，支持任意比例上/下采样 |
+
+### 1.2 公共模块
+
+| 路径 | 说明 |
+|------|------|
+| `rtl/public/fifo/` | 同步 FIFO、公共组件 |
+| `rtl/custom_op/AVR/` | AXI-Stream 寄存器切片（avr_rs/brs/frs） |
+| `rtl/custom_op/arbiter.v` | DMA 仲裁器（优先级：Gather > Hadamard > Resize） |
+| `rtl/custom_op/dma.v` | 通用 DMA 引擎 |
+| `rtl/custom_op/reg_ctrl.v` | CPU (APB) 寄存器配置接口 |
+
+### 1.3 顶层模块
+
+- `rtl/ai7030_edif_top.v` — AI7030 顶层综合文件
+- `rtl/ps_ai_wrap_demo.v` — PS-AI 封装示例
+
+### 1.4 SDI 相关（参考）
+
+- `rtl/sdi/` — 串行数据接口相关模块
+
+RTL代码详细说明：[RTL代码介绍](./rtl/rtl_summary.md)
+
+---
+
+## 二、quant_optimize — 量化优化工具链
+
+**路径**: `quant_optimize/`
+
+### 文件说明
+
+| 文件 | 说明 |
+|------|------|
+| `clip_hadamard.py` | **核心**：Hadamard 量化优化流程 — 加载 ONNX → 校准图像收集 → 异常值检测 → 插入 Hadamard 旋转层 → 导出优化模型 |
+| `zero_shot.py` | Zero-shot 图像分类推理脚本 |
+| `realtime_open_vocab_detection.py` | 实时开放词汇检测 |
+| `mix_config_hadamard.csv` | Hadamard 分组配置 |
+
+### Hadamard 量化流程
+
+1. **加载 ONNX 模型**，分析 Linear 层结构
+2. **收集校准图像**激活值统计（逐通道异常值检测）
+3. **检测异常层**：超过阈值的层标记为需要旋转
+4. **权重旋转**：离线完成 `W' = H @ W`
+5. **激活值旋转**：在 ONNX 模型中插入 `MatMul(X, H^T)` 层
+6. **验证一致性**后导出优化模型
+
+---
+
+## 三、deploy — 模型部署
+
+**路径**: `deploy/`
+
+### 目录结构
+
+```
+deploy/
+├── Deps/modelzoo/          # 运行时依赖库（C++ / Python API）
+├── modelzoo/clip/          # CLIP 部署推理代码
+│   ├── pyrt/               # Python Runtime 推理脚本
+│   │   ├── clip.py         # CLIP 主体推理
+│   │   ├── clip_img_host.py
+│   │   ├── clip_text_host.py
+│   │   ├── clip_full_pipeline.py
+│   │   └── clip_full_pipeline_camera.py
+│   ├── io/                 # 输入输出测试数据
+│   └── cfg/                # 部署配置文件
+├── pyrt/                   # 推理输出结果
+└── cfg/                    # 全局配置文件
+```
+
+### Deps/modelzoo — 运行时依赖
+
+**C++ API** (`deploy/Deps/modelzoo/`)：
+此处为复旦微提供，详见Icraft-doc
+
+### CLIP 推理脚本
+
+| 脚本 | 功能 |
+|------|------|
+| `clip.py` | CLIP 主推理流程 |
+| `clip_img_host.py` | 图像特征提取 |
+| `clip_text_host.py` | 文本特征提取 |
+| `clip_full_pipeline.py` | 完整 pipeline（图像+文本+相似度计算） |
+| `clip_full_pipeline_camera.py` | 摄像头实时推理 |
+| `match_onnx.py` | ONNX 结果对比验证 |
+
+---
+
+## 四、op — 自定义算子替换
+
+**路径**: `op/`
+
+### Gather 算子
+
+```
+op/gather/          # Gather 原始实现
+op/parser-gather/   # ONNX Gather 解析器
+op/gather-pass/     # 算子替换 Pass（优化阶段）
+```
+
+**编译**（Windows MSVC）：
+```shell
+cd op/gather/build
+rm ./*
+cmake ..
+cmake --build . --config Release
+# 输出：build/Release/GatherOP.Gather.dll
+```
+
+**在 icraft 中使用**：
+1. `icraft parse` 解析原始 ONNX → 生成 json & raw
+2. 设置环境变量 `$env:ICRAFT_CUSTOM_DIR="path/to/op/custom_op"`
+3. `icraft optimize` 完成算子替换
+
+---
+
+## 五、FPGA — 工程与 IP 配置
+
+**路径**: `FPGA/`
+
+### 主要内容
+
+- `FPGA/30TAI-PRJ/` — FPGA 工程工程文件
+- `ip_patch/` — IP 补丁与 edif 网表
+  - `edif/` — 综合后的 EDIF 网表
+  - `edif_transform/` — EDIF 转换脚本
+  - `tools/` — bitstream 替换等工具
+  - `process_control/` — Vivado 综合/实现流程控制脚本
+
+### 仿真脚本
+
+| 仿真 | 路径 |
+|------|------|
+| Hadamard INT8 | `FPGA/30TAI-PRJ.sim/hadamard_int8/` |
+| Hadamard | `FPGA/30TAI-PRJ.sim/Hadamard_sim/` |
+| Resize | `FPGA/30TAI-PRJ.sim/resize_sim/` |
+| Gather | `FPGA/30TAI-PRJ.sim/sim_1/` |
+
+---
+
+## 六、其他目录
+
+| 目录 | 说明 |
+|------|------|
+| `processor/` | CLIP 图像预处理器（HuggingFace 格式） |
+| `fmodel/` | ONNX 模型文件（原始 + Hadamard 优化版） |
+| `configs/` | YAML 配置文件（图像/文本任务配置） |
+| `sim/` | rtl仿真相关脚本 |
+| `qtset/` | 量化校准数据集 |
+| `test/` | 测试脚本 |
+
+---

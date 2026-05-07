@@ -1,7 +1,5 @@
 //================================================================================
-// Orgnization   : School of Electronic Science, NUDT
 // File Name     : arbiter.v
-// Author        : Changtai Lin
 // Project       :
 // Create Date   : 2026.04.25
 // Description   :
