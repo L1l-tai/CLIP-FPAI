@@ -1,6 +1,6 @@
 # CLIP ViT-B/32 FPGA 加速项目
 
-本项目实现 CLIP (Contrastive Language-Image Pre-training) 模型在 FPGA 上的部署加速，采用 Vivado RTL 设计配合自定义算子，支持 INT8 \ FP16 量化推理。
+本项目实现 CLIP (Contrastive Language-Image Pre-training) 模型在 FPAI 上的部署加速，在30TAI开发板上设计自定义算子，配合NPU实现异构协同加速，支持CLIP模型INT8\FP16量化推理。
 
 ---
 
