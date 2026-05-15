@@ -42,6 +42,7 @@ module resize_fsm (
     output reg          axis_pre_cal,    // axis pre-calculation status
     output reg          axis_cal_status, // axis calibration status
     output reg          resize_status,   // resize operation status
+    output [3:0]        state,
 
     input               clk,
     input               rst_n

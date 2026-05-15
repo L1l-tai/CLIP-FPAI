@@ -148,6 +148,21 @@ module hadamard_sim;
         end
     endfunction
 
+    // ============================================================
+    // $readmemh 加载数据 (最可靠, 不依赖 $fopen 文件权限)
+    // 使用纯 hex 格式 .txt, 每行 128 hex 字符 = 512-bit 块
+    // 用法: Vivado 中将 .txt 添加为 Simulation Source, 自动复制到仿真目录
+    // ============================================================
+    task load_mem_from_file;
+        input string filename;
+        input [31:0] base_addr;
+        begin
+            $display("Loading input from %s...", filename);
+            $readmemh(filename, mem, get_mem_index(base_addr));
+            $display("Loaded into memory starting at 0x%08X", base_addr);
+        end
+    endtask
+
     reg read_busy;
     reg pending_awvalid;
     reg [31:0] pending_awaddr;
@@ -186,50 +201,8 @@ module hadamard_sim;
             mem[i] = 512'd0;
         end
 
-        // --- 准备测试数据 (FP16格式) ---
-        // FP16: 每个数据16bit, 每个512bit块包含32个FP16数据
-        // 每个iteration需要2个DMA beats (共64个FP16数据)
-
-        $display("Loading FP16 Source Data...");
-
-        // 每个FWHT块需要64个FP16数据: 1, 2, 3, ... 64
-        // 分2个512bit块写入，每个块32个FP16
-        // 后续内存重复赋值四次（共8个块，模拟多次迭代）
-        // Block i 的数据为 j + 1 + i*0.5 (j=1~32, i=0~7)
-        for (i = 0; i < 8; i = i + 1) begin
-            integer j;
-            integer src_addr;
-            src_addr = SRC_BASE_ADDR + i * 64;  // 每个块64字节
-
-            // 填充32个FP16数据
-            for (j = 0; j < 32; j = j + 1) begin
-                integer word_idx;
-                integer bit_pos;
-                reg [15:0] fp16_val;
-                reg [15:0] fp16_half;
-                word_idx = j / 2;  // 2个FP16打包成一个32bit word
-                bit_pos = word_idx * 32;  // 32bit per word
-
-                // 生成FP16数据
-                fp16_val = int_to_fp16(j + 1 + (i >> 1));  // i>>1 = i/2 (integer part)
-                fp16_half = 16'h0035;  
-                if (i[0]) begin  // i为奇数时加0035
-                    fp16_val = fp16_val + fp16_half;
-                end
-
-                if (j % 2 == 0) begin
-                    // 低16位
-                    mem[get_mem_index(src_addr)][bit_pos+ : 15] = fp16_val;
-                end else begin
-                    // 高16位
-                    mem[get_mem_index(src_addr)][bit_pos + 16 + : 16] = fp16_val;
-                end
-            end
-            $display("  Block[%d] @ Addr 0x%08X, base=%.1f, first=0x%04X, last=0x%04X",
-                     i, src_addr, 1.0 + real'(i) * 0.5,
-                     int_to_fp16(1 + (i >> 1)) + (i[0] ? 16'h3C00 : 16'h0000),
-                     int_to_fp16(32 + (i >> 1)) + (i[0] ? 16'h3C00 : 16'h0000));
-        end
+        // --- 从文件加载测试数据 (FP16格式) ---
+        load_mem_from_file("fwht-input-fp16.mem", SRC_BASE_ADDR);
 
         // --- 通过寄存器访问进行配置阶段 ---
 
@@ -306,6 +279,10 @@ module hadamard_sim;
             end
         end
 
+        // --- 将硬件输出写入文件 ---
+        write_mem_to_file("fwht-output-fp16.mem",
+                          DST_BASE_ADDR, TOTAL_BLOCKS);
+
         $display("========================================");
         $display("SIMULATION COMPLETED");
         $display("========================================");
@@ -313,6 +290,22 @@ module hadamard_sim;
         #100;
         $finish;
     end
+
+    // ============================================================
+    // $writememh 写入内存数据 (与 $readmemh 完全对称, 最可靠)
+    // ============================================================
+    task write_mem_to_file;
+        input string filename;
+        input [31:0] base_addr;
+        input integer num_blocks;
+        integer start_idx, end_idx;
+        begin
+            start_idx = get_mem_index(base_addr);
+            end_idx   = get_mem_index(base_addr + (num_blocks - 1) * 64);
+            $writememh(filename, mem, start_idx, end_idx);
+            $display("Wrote %d blocks to %s", num_blocks, filename);
+        end
+    endtask
 
     // 向寄存器访问接口写入的任务
     task ra_write_reg;

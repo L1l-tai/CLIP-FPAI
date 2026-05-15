@@ -112,16 +112,20 @@ module hadamard_int8_sim;
         end
     endfunction
 
-    // Simple INT8 conversion: integer to signed INT8
-    function [7:0] simple_int8;
-        input integer value;
+    // ============================================================
+    // $readmemh 加载数据 (最可靠, 不依赖 $fopen 文件权限)
+    // 使用纯 hex 格式 .txt, 每行 128 hex 字符 = 512-bit 块
+    // 用法: Vivado 中将 .txt 添加为 Simulation Source, 自动复制到仿真目录
+    // ============================================================
+    task load_mem_from_file;
+        input string filename;
+        input [31:0] base_addr;
         begin
-            if (value < -128) simple_int8 = 8'h80;        // -128
-            else if (value > 127) simple_int8 = 8'h7F;     // 127
-            else if (value < 0) simple_int8 = 8'(256 + value); // Two's complement
-            else simple_int8 = 8'(value);
+            $display("Loading input from %s...", filename);
+            $readmemh(filename, mem, get_mem_index(base_addr));
+            $display("Loaded into memory starting at 0x%08X", base_addr);
         end
-    endfunction
+    endtask
 
     reg read_busy;
     reg pending_awvalid;
@@ -161,47 +165,8 @@ module hadamard_int8_sim;
             mem[i] = 512'd0;
         end
 
-        // --- 准备测试数据 (INT8格式) ---
-        // INT8: 每个数据8bit, 每个512bit块包含64个INT8数据
-        // 每个iteration需要2个DMA beats (共128个INT8数据)
-        // Block i 的数据为 j + 1 + i*2 (j=1~64, i=0~7)
-        // 范围: 1~127, -128~-1 (交替)
-
-        $display("Loading INT8 Source Data...");
-
-        for (i = 0; i < 8; i = i + 1) begin
-            integer j;
-            integer src_addr;
-            src_addr = SRC_BASE_ADDR + i * 64;  // 每个块64字节
-
-            // 填充64个INT8数据
-            for (j = 0; j < 64; j = j + 1) begin
-                integer byte_idx;
-                integer bit_pos;
-                reg [7:0] int8_val;
-                byte_idx = j / 4;  // 4个INT8打包成一个32bit word
-                bit_pos = byte_idx * 32 + (j % 4) * 8;  // 8bit per INT8
-
-                // 生成INT8数据: j + 1 + i*2，交替正负
-                // 正数: 1, 2, 3, ... (j+1+i*2)
-                // 负数: -1, -2, -3, ... (-(j+1+i*2))
-                if (j % 2 == 0) begin
-                    // 偶数索引: 正数
-                    int8_val = simple_int8(j/2 + 1 + i*2);
-                end else begin
-                    // 奇数索引: 负数
-                    int8_val = simple_int8(-(j/2 + 1 + i*2));
-                end
-
-                mem[get_mem_index(src_addr)][bit_pos +: 8] = int8_val;
-            end
-            $display("  Block[%d] @ Addr 0x%08X, first=0x%02X(%d), last=0x%02X(%d)",
-                     i, src_addr,
-                     mem[get_mem_index(src_addr)][7:0],
-                     $signed(mem[get_mem_index(src_addr)][7:0]),
-                     mem[get_mem_index(src_addr)][511:504],
-                     $signed(mem[get_mem_index(src_addr)][511:504]));
-        end
+        // --- 从文件加载测试数据 (INT8格式) ---
+        load_mem_from_file("fwht-input-int8.mem", SRC_BASE_ADDR);
 
         // --- 通过寄存器访问进行配置阶段 ---
 
@@ -278,6 +243,10 @@ module hadamard_int8_sim;
             end
         end
 
+        // --- 将硬件输出写入文件 ---
+        write_mem_to_file("fwht-output-int8.mem",
+                          DST_BASE_ADDR, TOTAL_BLOCKS);
+
         $display("========================================");
         $display("INT8 SIMULATION COMPLETED");
         $display("========================================");
@@ -285,6 +254,22 @@ module hadamard_int8_sim;
         #100;
         $finish;
     end
+
+    // ============================================================
+    // $writememh 写入内存数据 (与 $readmemh 完全对称, 最可靠)
+    // ============================================================
+    task write_mem_to_file;
+        input string filename;
+        input [31:0] base_addr;
+        input integer num_blocks;
+        integer start_idx, end_idx;
+        begin
+            start_idx = get_mem_index(base_addr);
+            end_idx   = get_mem_index(base_addr + (num_blocks - 1) * 64);
+            $writememh(filename, mem, start_idx, end_idx);
+            $display("Wrote %d blocks to %s", num_blocks, filename);
+        end
+    endtask
 
     // 向寄存器访问接口写入的任务
     task ra_write_reg;

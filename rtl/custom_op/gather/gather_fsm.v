@@ -36,6 +36,7 @@ module gather_fsm (
     output reg          rd_indices,
     output reg          trans_data,
     output reg          gen_status,
+    output [2:0]        state,
 
     input               clk,
     input               rst_n

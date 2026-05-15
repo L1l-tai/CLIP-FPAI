@@ -66,6 +66,15 @@ module customop_top(
     wire              ra_rst_n_1 ;
     wire              comp_done_cross;
     wire              comp_start_cross;
+    wire              comp_start_hd_cross;
+    wire              comp_done_hd_cross;
+    wire              comp_start_rs_cross;
+    wire              comp_done_rs_cross;
+
+    // FSM state signals (for debug readout)
+    wire [2:0]        gather_state;
+    wire [2:0]        hadamard_state;
+    wire [3:0]        resize_state;
 
     //Gather FSM internal signals
     wire              addr_gen_valid;
@@ -225,6 +234,20 @@ module customop_top(
     wire              itf_rd_done_arb;
     wire              itf_wr_done_arb;
 
+    // ============================================================
+    // Debug register bus: 2-FF synchronizers (clk -> ra_clk)
+    // ============================================================
+    wire [31:0] dbg_rreg0;
+    wire [31:0] dbg_rreg1;
+    wire [31:0] dbg_rreg2;
+    wire [31:0] dbg_rreg3;
+
+    // Synchronizer registers (stage 1 / stage 2) for clk-domain debug signals
+    reg  [6:0]  dbg0_s1, dbg0_s2;   // CDC overview clk-domain signals
+    reg [10:0]  dbg1_s1, dbg1_s2;   // Gather FSM debug signals
+    reg [11:0]  dbg2_s1, dbg2_s2;   // Hadamard FSM debug signals
+    reg [14:0]  dbg3_s1, dbg3_s2;   // Resize FSM debug signals
+
   /*-------------Regs are controled by runtime application------------*/
   reg_ctrl   U_reg_ctrl(   
           .ra_awaddr     ( itf_ra_awaddr[17:2]    ),  
@@ -252,7 +275,7 @@ module customop_top(
           .rbase_hd       ( arbase_hd        ) ,
           .wbase_hd       ( awbase_hd        ) ,
           .wrsize_hd      ( wrsize_hd        ) ,
-          .comp_done_hd   ( comp_done_hd     ) ,
+          .comp_done_hd   ( comp_done_hd_cross ) ,
 
           .comp_start_rs  ( comp_start_rs    ) ,
           .rbase_rs       ( rbase_rs         ) ,
@@ -261,12 +284,12 @@ module customop_top(
           .wbase_rs       ( wbase_rs         ) ,
           .wwidth_rs      ( wwidth_rs        ) ,
           .wheight_rs     ( wheight_rs       ) ,
-          .comp_done_rs   ( comp_done_rs     ) ,
+          .comp_done_rs   ( comp_done_rs_cross ) ,
           
-          .rfu_rreg0     ( 32'd0            ),       //read reg;                                            
-          .rfu_rreg1     ( 32'd0            ),                                              
-          .rfu_rreg2     ( 32'd0            ),                                              
-          .rfu_rreg3     ( 32'd0            ),                                              
+          .rfu_rreg0     ( dbg_rreg0        ),       //read reg - CDC debug
+          .rfu_rreg1     ( dbg_rreg1        ),       //read reg - Gather FSM debug
+          .rfu_rreg2     ( dbg_rreg2        ),       //read reg - Hadamard FSM debug
+          .rfu_rreg3     ( dbg_rreg3        ),       //read reg - Resize FSM debug                                              
           .rfu_rreg4     ( 32'd0            ),                                              
           .rfu_rreg5     ( 32'd0            ),                                              
           .rfu_rreg6     ( 32'd0            ),                                              
@@ -316,7 +339,8 @@ module customop_top(
        .rd_indices       ( rd_indices       ), // output
        .gen_status       ( gen_status       ), // output
        .trans_data       ( trans_data       ), // output
-       
+       .state            ( gather_state     ), // output
+
        .clk              ( clk              ), // input
        .rst_n            ( rst_n_1          )  // input
    );
@@ -413,8 +437,8 @@ module customop_top(
 
       // Control signals
       .gather_comp_start  ( comp_start_cross    ),
-      .hadamard_comp_start( comp_start_hd       ),
-      .resize_comp_start  ( comp_start_rs       ),
+      .hadamard_comp_start( comp_start_hd_cross ),
+      .resize_comp_start  ( comp_start_rs_cross ),
 
       .clk                ( clk                 ),
       .rst_n              ( rst_n_1             )
@@ -476,6 +500,54 @@ module customop_top(
         .rst1    (  ~ra_rst_n_1      )
   );
 
+      // CDC for Hadamard start (ra_clk -> clk)
+      pulse_cross U2_pulse_cross(
+            .a2      (  comp_start_hd_cross ),
+            .clk2    (  clk                 ),
+            .rst2    (  ~rst_n_1            ),
+
+            .rdy1    (                      ),
+            .a1      (  comp_start_hd       ),
+            .clk1    (  ra_clk              ),
+            .rst1    (  ~ra_rst_n_1         )
+      );
+
+      // CDC for Hadamard done (clk -> ra_clk)
+      pulse_cross U3_pulse_cross(
+            .a2      (  comp_done_hd_cross ),
+            .clk2    (  ra_clk             ),
+            .rst2    (  ~ra_rst_n_1        ),
+
+            .rdy1    (                     ),
+            .a1      (  comp_done_hd       ),
+            .clk1    (  clk                ),
+            .rst1    (  ~rst_n_1           )
+      );
+
+      // CDC for Resize start (ra_clk -> clk)
+      pulse_cross U4_pulse_cross(
+            .a2      (  comp_start_rs_cross ),
+            .clk2    (  clk                 ),
+            .rst2    (  ~rst_n_1            ),
+
+            .rdy1    (                      ),
+            .a1      (  comp_start_rs       ),
+            .clk1    (  ra_clk              ),
+            .rst1    (  ~ra_rst_n_1         )
+      );
+
+      // CDC for Resize done (clk -> ra_clk)
+      pulse_cross U5_pulse_cross(
+            .a2      (  comp_done_rs_cross ),
+            .clk2    (  ra_clk             ),
+            .rst2    (  ~ra_rst_n_1        ),
+
+            .rdy1    (                     ),
+            .a1      (  comp_done_rs       ),
+            .clk1    (  clk                ),
+            .rst1    (  ~rst_n_1           )
+      );
+
   // ============================================================
   // Hadamard Module Instances
   // ============================================================
@@ -484,7 +556,7 @@ module customop_top(
   hadamard_fsm U_hadamard_fsm (
       .rd_done          ( arb_rd_done_hd     ), // input - from arbiter
       .wr_done          ( arb_wr_done_hd     ), // input - from arbiter
-      .hd_comp_start    ( comp_start_hd     ), // input - from reg_ctrl
+      .hd_comp_start    ( comp_start_hd_cross ), // input - from reg_ctrl (via CDC)
       .arbase_hd_gen    ( arbase_hd_gen    ), // input
       .arsize_hd_gen    ( arsize_hd_gen    ), // input
       .awbase_hd_gen    ( awbase_hd_gen    ), // input
@@ -504,6 +576,7 @@ module customop_top(
       .trans_status     ( trans_status_hd  ), // output [1:0]
       .gen_status       ( gen_status_hd    ), // output
       .fwht_status      ( fwht_status_hd   ), // output
+      .state            ( hadamard_state   ), // output
 
       .clk              ( clk              ),
       .rst_n            ( rst_n_1          )
@@ -565,7 +638,7 @@ module customop_top(
   resize_fsm U_resize_fsm (
       .rd_done          ( arb_rd_done_rs     ), // input - from arbiter
       .wr_done          ( arb_wr_done_rs     ), // input - from arbiter
-      .rs_comp_start    ( comp_start_rs     ), // input - from reg_ctrl
+      .rs_comp_start    ( comp_start_rs_cross ), // input - from reg_ctrl (via CDC)
       .arbase_rs_gen   ( arbase_rs_gen    ), // input
       .arbase_rs_gen_2 ( arbase_rs_gen_2   ), // input
       .arsize_rs_gen   ( arsize_rs_gen    ), // input
@@ -591,6 +664,7 @@ module customop_top(
       .axis_pre_cal    ( axis_pre_cal_rs   ), // output
       .axis_cal_status ( axis_cal_status_rs ), // output
       .resize_status    ( resize_status_rs  ), // output
+      .state            ( resize_state     ), // output
 
       .clk              ( clk              ),
       .rst_n            ( rst_n_1          )
@@ -681,6 +755,109 @@ module customop_top(
       .clk              ( clk              ),
       .rst_n            ( rst_n_1          )
   );
+
+  // 2-FF synchronizer chain: clk-domain signals sampled into ra_clk domain
+  always @(posedge ra_clk or negedge ra_rst_n_1) begin
+      if (!ra_rst_n_1) begin
+          dbg0_s1 <= 7'd0;  dbg0_s2 <= 7'd0;
+          dbg1_s1 <= 11'd0; dbg1_s2 <= 11'd0;
+          dbg2_s1 <= 12'd0; dbg2_s2 <= 12'd0;
+          dbg3_s1 <= 15'd0; dbg3_s2 <= 15'd0;
+      end else begin
+          //sample from clk domain 
+          dbg0_s1 <= {rst_n_1, comp_start_cross, comp_done,
+                      comp_start_hd_cross, comp_done_hd,
+                      comp_start_rs_cross, comp_done_rs};
+          dbg0_s2 <= dbg0_s1;
+
+          dbg1_s1 <= {gather_state, gen_status, rd_indices, trans_data,
+                      rd_start, wr_start, arb_rd_done_gather, arb_wr_done_gather,
+                      comp_done};
+          dbg1_s2 <= dbg1_s1;
+
+          dbg2_s1 <= {hadamard_state, gen_status_hd, fwht_status_hd,
+                      trans_status_hd, rd_start_hd, wr_start_hd,
+                      arb_rd_done_hd, arb_wr_done_hd, comp_done_hd};
+          dbg2_s2 <= dbg2_s1;
+
+          dbg3_s1 <= {resize_state, gen_status_rs, axis_pre_cal_rs,
+                      axis_cal_status_rs, resize_status_rs, trans_status_rs,
+                      rd_start_rs, wr_start_rs,
+                      arb_rd_done_rs, arb_wr_done_rs, comp_done_rs};
+          dbg3_s2 <= dbg3_s1;
+      end
+  end
+
+  // Pack synchronized signals into debug read buses
+  // rfu_rreg0 (0x21): CDC overview — cross-domain start/done + reset
+  assign dbg_rreg0 = {
+      16'd0,                     // [31:16] reserved
+      comp_done_rs_cross,        // [15] ra_clk域
+      dbg0_s2[6],                // [14] comp_done_rs        (clk域, synced)
+      comp_start_rs_cross,       // [13] clk域 (same wire)
+      comp_start_rs,             // [12] ra_clk域
+      comp_done_hd_cross,        // [11] ra_clk域
+      dbg0_s2[4],                // [10] comp_done_hd        (clk域, synced)
+      comp_start_hd_cross,       // [9]  clk域 (same wire)
+      comp_start_hd,             // [8]  ra_clk域
+      comp_done_cross,           // [7]  ra_clk域
+      dbg0_s2[2],                // [6]  comp_done           (clk域, synced)
+      comp_start_cross,          // [5]  clk域 (same wire)
+      comp_start,                // [4]  ra_clk域
+      2'd0,                      // [3:2] reserved
+      ra_rst_n_1,                // [1]  ra_clk域
+      dbg0_s2[0]                 // [0]  rst_n_1             (clk域, synced)
+  };
+
+  // rfu_rreg1 (0x22): Gather FSM status
+  assign dbg_rreg1 = {
+      21'd0,                     // [31:11] reserved
+      dbg1_s2                    // [10:0]  synced gather debug bus
+  };
+  //   dbg1_s2 bit mapping:
+  //   [10:8]  gather_state[2:0]
+  //   [7]     gen_status
+  //   [6]     rd_indices
+  //   [5]     trans_data
+  //   [4]     rd_start
+  //   [3]     wr_start
+  //   [2]     arb_rd_done_gather
+  //   [1]     arb_wr_done_gather
+  //   [0]     comp_done (gather)
+
+  // rfu_rreg2 (0x23): Hadamard FSM status
+  assign dbg_rreg2 = {
+      20'd0,                     // [31:12] reserved
+      dbg2_s2                    // [11:0]  synced hadamard debug bus
+  };
+  //   dbg2_s2 bit mapping:
+  //   [11:9]  hadamard_state[2:0]
+  //   [8]     gen_status_hd
+  //   [7]     fwht_status_hd
+  //   [6:5]   trans_status_hd[1:0]
+  //   [4]     rd_start_hd
+  //   [3]     wr_start_hd
+  //   [2]     arb_rd_done_hd
+  //   [1]     arb_wr_done_hd
+  //   [0]     comp_done_hd
+
+  // rfu_rreg3 (0x24): Resize FSM status
+  assign dbg_rreg3 = {
+      17'd0,                     // [31:15] reserved
+      dbg3_s2                    // [14:0]  synced resize debug bus
+  };
+  //   dbg3_s2 bit mapping:
+  //   [14:11] resize_state[3:0]
+  //   [10]    gen_status_rs
+  //   [9]     axis_pre_cal_rs
+  //   [8]     axis_cal_status_rs
+  //   [7]     resize_status_rs
+  //   [6:5]   trans_status_rs[1:0]
+  //   [4]     rd_start_rs
+  //   [3]     wr_start_rs
+  //   [2]     arb_rd_done_rs
+  //   [1]     arb_wr_done_rs
+  //   [0]     comp_done_rs
 
   always@(posedge clk or negedge ra_rst_n) begin
      if(ra_rst_n==1'b0)

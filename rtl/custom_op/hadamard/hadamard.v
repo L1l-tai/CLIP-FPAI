@@ -105,7 +105,8 @@ for (i = 0; i < 32; i = i + 1) begin: fwht_regs_gen_0
         end
         else if(din_valid & din_ready & rd_cnt==2'd0) begin
             if(~cal_percision) begin
-                fwht_regs[i] <= #0.1 {8'b0, din[i * 8 + 7 : i * 8]};
+                // INT8 → INT16: 符号扩展, sign bit 推到 bit 15
+                fwht_regs[i] <= #0.1 { {8{din[i*8+7]}}, din[i*8+7 : i*8] };
             end
             else begin
                 fwht_regs[i] <= #0.1 din[i * 16 + 15 : i * 16];
@@ -124,7 +125,8 @@ for (j = 0; j < 32; j = j + 1) begin: fwht_regs_gen_1
         end
         else if(din_valid & din_ready) begin
             if(~cal_percision & rd_cnt==2'd0) begin
-                fwht_regs[j+32] <= #0.1 {8'b0, din[(j + 32) * 8 + 7 : (j + 32) * 8]};
+                // INT8 → INT16: 符号扩展, sign bit 推到 bit 15
+                fwht_regs[j+32] <= #0.1 { {8{din[(j+32)*8+7]}}, din[(j+32)*8+7 : (j+32)*8] };
             end
             else if(cal_percision & rd_cnt == 2'd1) begin
                 fwht_regs[j+32] <= #0.1 din[j*16+15:j*16];
@@ -377,7 +379,7 @@ generate
 
         fwht_pub #(
             .EXP_W(5),
-            .MAN_W(10),
+            .MAN_W(13),     // 13-bit覆盖FWHT最大幅值8128, FP16/INT16共享
             .FP_W(16)
         ) u_fwht_pub (
             .clk            (clk),

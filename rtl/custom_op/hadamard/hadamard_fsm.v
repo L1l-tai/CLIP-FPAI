@@ -39,6 +39,7 @@ module hadamard_fsm (
     output reg [1:0]    trans_status,
     output reg          gen_status,
     output reg          fwht_status,
+    output [2:0]        state,
 
     input               clk,
     input               rst_n
