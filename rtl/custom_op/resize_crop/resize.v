@@ -35,6 +35,12 @@ module resize (
 
     output                  resize_done   ,
 
+    // FIFO 状态输出 → FSM
+    output                  fifo_flush_ready,
+    output                  fifo_empty,
+    // FIFO drain 命令 ← FSM
+    input                   fifo_drain,
+
     input                   clk           ,
     input                   rst_n
 );
@@ -47,7 +53,7 @@ reg     [1 : 0]             rd_cnt;
 reg     [1 : 0]             wr_cnt;
 
 // 坐标计算寄存器
-reg     [8:0]               data_valid_reg;
+reg     [7:0]               data_valid_reg;
 reg     [15:0]              x_delta_reg [15:0];  // 16个16bit元素
 reg     [7:0]               y_delta_reg;
 reg                         rd_second_reg;
@@ -59,9 +65,24 @@ reg                         resize_status_r2;  // 第二级：权重/像素值�
 reg                         resize_status_r3;  // 第三级：乘法结果/最终结果寄存器
 reg                         resize_status_r4;
 reg                         result_valid;
+    reg                         result_valid_reg;
+    wire                        result_valid_pos;
 
 
 wire                        resize_status_r3_pos;
+
+// ============ FIFO interface signals ============
+// 批量写接口
+wire                        batch_wr_en;
+wire    [511:0]             batch_wr_data;
+wire    [4:0]               batch_wr_count;
+// 读接口
+wire                        fifo_rd_en;
+wire    [511:0]             fifo_rd_data;
+wire                        fifo_rd_valid;
+wire    [5:0]               fifo_cnt;
+// fifo_flush_ready / fifo_empty 已作为 output port 声明
+wire                        fifo_full;
 
 wire    [511 : 0]           dout_rs    ;
 wire                        dout_valid_rs  ;
@@ -98,7 +119,7 @@ endgenerate
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        data_valid_reg <= #0.1 9'd0;
+        data_valid_reg <= #0.1 8'd0;
         y_delta_reg <= #0.1 8'd0;
     end
     else if (rd_second_pos) begin
@@ -130,21 +151,47 @@ end
 // resize_status_r3 上升沿检测
 assign resize_status_r3_pos = resize_status_r3 & ~resize_status_r4;
 
-// result_valid 在 resize_status_r3 上升沿时拉高
+// resize_status 下降沿检测 (离开 RESIZE 状态时清零 result_valid)
+reg  resize_status_reg;
+wire resize_status_negedge = ~resize_status & resize_status_reg;
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        resize_status_reg <= #0.1 1'b0;
+    else
+        resize_status_reg <= #0.1 resize_status;
+end
+
+// result_valid: 在 resize_status_r3_pos 拉高, 离开 RESIZE 后清零
+// result_valid_reg 在同一 always 块中更新, 保证与 result_valid 同步
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        result_valid <= #0.1 1'b0;
-    end
-    else if (resize_status_r3_pos) begin
-        result_valid <= #0.1 1'b1;
-    end
-    else if(wr_done) begin
-        result_valid <= #0.1 1'b0;
+        result_valid     <= #0.1 1'b0;
+        result_valid_reg <= #0.1 1'b0;
     end
     else begin
-        result_valid <= #0.1 result_valid;
+        result_valid_reg <= #0.1 result_valid;
+        if (resize_status_r3_pos)
+            result_valid <= #0.1 1'b1;
+        else if (resize_status_negedge)
+            result_valid <= #0.1 1'b0;
+        else
+            result_valid <= #0.1 result_valid;
     end
 end
+assign result_valid_pos = result_valid & ~result_valid_reg;
+
+// ============ 批量写触发 ============
+// result_valid_pos: 计算完成 (result_val 已稳定多周期)
+
+// 批量写数据: 16 像素拼为 512-bit
+assign batch_wr_data = {result_val[15], result_val[14], result_val[13], result_val[12],
+                         result_val[11], result_val[10], result_val[ 9], result_val[ 8],
+                         result_val[ 7], result_val[ 6], result_val[ 5], result_val[ 4],
+                         result_val[ 3], result_val[ 2], result_val[ 1], result_val[ 0]};
+
+assign batch_wr_en    = result_valid_pos;
+assign batch_wr_count = data_valid_reg[4:0];
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -239,10 +286,10 @@ wire    [3:0]               x_delta_inv [15:0];  // 1 - x_delta, 只取低8位
 (* use_dsp = "yes" *)  wire    [7:0]              weight_22_c [15:0];  // P到Q22权重(组合逻辑)
 
 // 权重寄存器
-reg     [5:0]              weight_11 [15:0];  // P到Q11权重
-reg     [5:0]              weight_12 [15:0];  // P到Q12权重
-reg     [5:0]              weight_21 [15:0];  // P到Q21权重
-reg     [5:0]              weight_22 [15:0];  // P到Q22权重
+reg     [7:0]              weight_11 [15:0];  // P到Q11权重
+reg     [7:0]              weight_12 [15:0];  // P到Q12权重
+reg     [7:0]              weight_21 [15:0];  // P到Q21权重
+reg     [7:0]              weight_22 [15:0];  // P到Q22权重
 
 genvar k;
 generate
@@ -269,7 +316,7 @@ endgenerate
 
 // ============================================================
 // 根据x_delta_reg的高4位确定有效的输入索引
-// x_delta_reg[k][15:12] 表示第k个输出像素对应的Q11点的列索引(0~15)
+// x_delta_reg[k][14:11] 表示第k个输出像素对应的Q11点的列索引(0~15)
 // ============================================================
 wire    [3:0]               src_idx [15:0];  // 第k个输出像素对应的Q11源像素列索引
 
@@ -277,7 +324,7 @@ genvar idx;
 generate
     for (idx = 0; idx < 16; idx = idx + 1) begin: src_idx_calc
         // 只有当 idx < data_valid 时才有有效的源像素索引
-        assign src_idx[idx] = (idx < data_valid) ? x_delta_reg[idx][15:12] : 4'd0;
+        assign src_idx[idx] = (idx < data_valid) ? x_delta_reg[idx][11:8] : 4'd0;
     end
 endgenerate
 
@@ -306,12 +353,12 @@ generate
         // 只有当 px < data_valid 时才取有效像素值，否则为0
         // Q11: 当前行第src_idx[px]列
         assign q11_val_c[px] = (px < data_valid) ? rs_regs[src_idx[px]] : 32'd0;
-        // Q12: 当前行第src_idx[px]+1列
-        assign q12_val_c[px] = (px < data_valid) ? rs_regs[src_idx[px] + 1] : 32'd0;
+        // Q12: 当前行第src_idx[px]+1列 (src_idx=15时钳位到像素15)
+        assign q12_val_c[px] = (px < data_valid) ? rs_regs[(src_idx[px] < 15) ? (src_idx[px] + 4'd1) : 4'd15] : 32'd0;
         // Q21: 下一行第src_idx[px]列
         assign q21_val_c[px] = (px < data_valid) ? rs_regs_2[src_idx[px]] : 32'd0;
-        // Q22: 下一行第src_idx[px]+1列
-        assign q22_val_c[px] = (px < data_valid) ? rs_regs_2[src_idx[px] + 1] : 32'd0;
+        // Q22: 下一行第src_idx[px]+1列 (src_idx=15时钳位到像素15)
+        assign q22_val_c[px] = (px < data_valid) ? rs_regs_2[(src_idx[px] < 15) ? (src_idx[px] + 4'd1) : 4'd15] : 32'd0;
     end
 endgenerate
 
@@ -327,10 +374,10 @@ generate
                 weight_22[w] <= #0.1 6'd0;
             end
             else if (resize_status) begin
-                weight_11[w] <= #0.1 weight_11_c[w][5:0];
-                weight_12[w] <= #0.1 weight_12_c[w][5:0];
-                weight_21[w] <= #0.1 weight_21_c[w][5:0];
-                weight_22[w] <= #0.1 weight_22_c[w][5:0];
+                weight_11[w] <= #0.1 weight_11_c[w];
+                weight_12[w] <= #0.1 weight_12_c[w];
+                weight_21[w] <= #0.1 weight_21_c[w];
+                weight_22[w] <= #0.1 weight_22_c[w];
             end
             else begin
                 weight_11[w] <= #0.1 weight_11[w];
@@ -375,32 +422,32 @@ endgenerate
 // 像素值格式: {R[7:0], G[7:0], B[7:0], 8'b0}
 // ============================================================
 // 乘法结果组合逻辑 - 按RGB三通道拆分
-(* use_dsp = "yes" *) wire    [13:0]              result_11_r_c [15:0];  // Q11·w11_R通道
-(* use_dsp = "yes" *) wire    [13:0]              result_11_g_c [15:0];  // Q11·w11_G通道
-(* use_dsp = "yes" *) wire    [13:0]              result_11_b_c [15:0];  // Q11·w11_B通道
-(* use_dsp = "yes" *) wire    [13:0]              result_12_r_c [15:0];  // Q12·w12_R通道
-(* use_dsp = "yes" *) wire    [13:0]              result_12_g_c [15:0];  // Q12·w12_G通道
-(* use_dsp = "yes" *) wire    [13:0]              result_12_b_c [15:0];  // Q12·w12_B通道
-(* use_dsp = "yes" *) wire    [13:0]              result_21_r_c [15:0];  // Q21·w21_R通道
-(* use_dsp = "yes" *) wire    [13:0]              result_21_g_c [15:0];  // Q21·w21_G通道
-(* use_dsp = "yes" *) wire    [13:0]              result_21_b_c [15:0];  // Q21·w21_B通道
-(* use_dsp = "yes" *) wire    [13:0]              result_22_r_c [15:0];  // Q22·w22_R通道
-(* use_dsp = "yes" *) wire    [13:0]              result_22_g_c [15:0];  // Q22·w22_G通道
-(* use_dsp = "yes" *) wire    [13:0]              result_22_b_c [15:0];  // Q22·w22_B通道
+(* use_dsp = "yes" *) wire    [15:0]              result_11_r_c [15:0];  // Q11·w11_R通道
+(* use_dsp = "yes" *) wire    [15:0]              result_11_g_c [15:0];  // Q11·w11_G通道
+(* use_dsp = "yes" *) wire    [15:0]              result_11_b_c [15:0];  // Q11·w11_B通道
+(* use_dsp = "yes" *) wire    [15:0]              result_12_r_c [15:0];  // Q12·w12_R通道
+(* use_dsp = "yes" *) wire    [15:0]              result_12_g_c [15:0];  // Q12·w12_G通道
+(* use_dsp = "yes" *) wire    [15:0]              result_12_b_c [15:0];  // Q12·w12_B通道
+(* use_dsp = "yes" *) wire    [15:0]              result_21_r_c [15:0];  // Q21·w21_R通道
+(* use_dsp = "yes" *) wire    [15:0]              result_21_g_c [15:0];  // Q21·w21_G通道
+(* use_dsp = "yes" *) wire    [15:0]              result_21_b_c [15:0];  // Q21·w21_B通道
+(* use_dsp = "yes" *) wire    [15:0]              result_22_r_c [15:0];  // Q22·w22_R通道
+(* use_dsp = "yes" *) wire    [15:0]              result_22_g_c [15:0];  // Q22·w22_G通道
+(* use_dsp = "yes" *) wire    [15:0]              result_22_b_c [15:0];  // Q22·w22_B通道
 
 // 乘法结果寄存器
-reg     [13:0]              result_11_r [15:0];  // Q11·w11_R通道
-reg     [13:0]              result_11_g [15:0];  // Q11·w11_G通道
-reg     [13:0]              result_11_b [15:0];  // Q11·w11_B通道
-reg     [13:0]              result_12_r [15:0];  // Q12·w12_R通道
-reg     [13:0]              result_12_g [15:0];  // Q12·w12_G通道
-reg     [13:0]              result_12_b [15:0];  // Q12·w12_B通道
-reg     [13:0]              result_21_r [15:0];  // Q21·w21_R通道
-reg     [13:0]              result_21_g [15:0];  // Q21·w21_G通道
-reg     [13:0]              result_21_b [15:0];  // Q21·w21_B通道
-reg     [13:0]              result_22_r [15:0];  // Q22·w22_R通道
-reg     [13:0]              result_22_g [15:0];  // Q22·w22_G通道
-reg     [13:0]              result_22_b [15:0];  // Q22·w22_B通道
+reg     [15:0]              result_11_r [15:0];  // Q11·w11_R通道
+reg     [15:0]              result_11_g [15:0];  // Q11·w11_G通道
+reg     [15:0]              result_11_b [15:0];  // Q11·w11_B通道
+reg     [15:0]              result_12_r [15:0];  // Q12·w12_R通道
+reg     [15:0]              result_12_g [15:0];  // Q12·w12_G通道
+reg     [15:0]              result_12_b [15:0];  // Q12·w12_B通道
+reg     [15:0]              result_21_r [15:0];  // Q21·w21_R通道
+reg     [15:0]              result_21_g [15:0];  // Q21·w21_G通道
+reg     [15:0]              result_21_b [15:0];  // Q21·w21_B通道
+reg     [15:0]              result_22_r [15:0];  // Q22·w22_R通道
+reg     [15:0]              result_22_g [15:0];  // Q22·w22_G通道
+reg     [15:0]              result_22_b [15:0];  // Q22·w22_B通道
 
 genvar m;
 generate
@@ -430,18 +477,18 @@ generate
     for (r = 0; r < 16; r = r + 1) begin: result_reg
         always @(posedge clk or negedge rst_n) begin
             if (!rst_n) begin
-                result_11_r[r] <= #0.1 14'd0;
-                result_11_g[r] <= #0.1 14'd0;
-                result_11_b[r] <= #0.1 14'd0;
-                result_12_r[r] <= #0.1 14'd0;
-                result_12_g[r] <= #0.1 14'd0;
-                result_12_b[r] <= #0.1 14'd0;
-                result_21_r[r] <= #0.1 14'd0;
-                result_21_g[r] <= #0.1 14'd0;
-                result_21_b[r] <= #0.1 14'd0;
-                result_22_r[r] <= #0.1 14'd0;
-                result_22_g[r] <= #0.1 14'd0;
-                result_22_b[r] <= #0.1 14'd0;
+                result_11_r[r] <= #0.1 16'd0;
+                result_11_g[r] <= #0.1 16'd0;
+                result_11_b[r] <= #0.1 16'd0;
+                result_12_r[r] <= #0.1 16'd0;
+                result_12_g[r] <= #0.1 16'd0;
+                result_12_b[r] <= #0.1 16'd0;
+                result_21_r[r] <= #0.1 16'd0;
+                result_21_g[r] <= #0.1 16'd0;
+                result_21_b[r] <= #0.1 16'd0;
+                result_22_r[r] <= #0.1 16'd0;
+                result_22_g[r] <= #0.1 16'd0;
+                result_22_b[r] <= #0.1 16'd0;
             end
             else if (resize_status) begin
                 result_11_r[r] <= #0.1 result_11_r_c[r];
@@ -480,25 +527,33 @@ endgenerate
 // P = Q11·w11 + Q12·w12 + Q21·w21 + Q22·w22
 // 直接取加权值的高8位相加，得到最终8位像素值
 // ============================================================
-// 加法结果组合逻辑 (使用高8位计算，4个8位相加最大10位)
-wire    [7:0]               result_r_c [15:0];  // R通道累加结果 (4个8位相加最大10位)
-wire    [7:0]               result_g_c [15:0];  // G通道累加结果
-wire    [7:0]               result_b_c [15:0];  // B通道累加结果
+    // 加法结果: 全精度[13:0]求和, 再右移6位(÷64权重归一化), 取8位输出
+    wire    [15:0]              sum_r_full [15:0];  // R通道全精度和 (4×14bit → 16bit)
+    wire    [15:0]              sum_g_full [15:0];  // G通道全精度和
+    wire    [15:0]              sum_b_full [15:0];  // B通道全精度和
+    wire    [7:0]               result_r_c [15:0];  // R通道最终结果
+    wire    [7:0]               result_g_c [15:0];  // G通道最终结果
+    wire    [7:0]               result_b_c [15:0];  // B通道最终结果
 
-// 最终像素值寄存器 {R, G, B, 8'b0}
-reg     [31:0]              result_val [15:0];  // 最终插值结果
+    // 最终像素值寄存器 {R, G, B, 8'b0}
+    reg     [31:0]              result_val [15:0];  // 最终插值结果
 
-genvar a;
-generate
-    for (a = 0; a < 16; a = a + 1) begin: add_stage
-        // R通道: 四个加权值的高8位相加
-        assign result_r_c[a] = result_11_r[a][13:6] + result_12_r[a][13:6] + result_21_r[a][13:6] + result_22_r[a][13:6];
-        // G通道: 四个加权值的高8位相加
-        assign result_g_c[a] = result_11_g[a][13:6] + result_12_g[a][13:6] + result_21_g[a][13:6] + result_22_g[a][13:6];
-        // B通道: 四个加权值的高8位相加
-        assign result_b_c[a] = result_11_b[a][13:6] + result_12_b[a][13:6] + result_21_b[a][13:6] + result_22_b[a][13:6];
-    end
-endgenerate
+    genvar a;
+    generate
+        for (a = 0; a < 16; a = a + 1) begin: add_stage
+            // 全精度求和 (保留低位进位)
+            assign sum_r_full[a] = result_11_r[a] + result_12_r[a]
+                                 + result_21_r[a] + result_22_r[a];
+            assign sum_g_full[a] = result_11_g[a] + result_12_g[a]
+                                 + result_21_g[a] + result_22_g[a];
+            assign sum_b_full[a] = result_11_b[a] + result_12_b[a]
+                                 + result_21_b[a] + result_22_b[a];
+            // 右移6位 (÷64权重归一化), 取8位
+            assign result_r_c[a] = sum_r_full[a][13:6];
+            assign result_g_c[a] = sum_g_full[a][13:6];
+            assign result_b_c[a] = sum_b_full[a][13:6];
+        end
+    endgenerate
 
 // 在resize_status时寄存最终结果
 genvar s;
@@ -519,25 +574,76 @@ generate
 endgenerate
 
 assign din_ready = trans_status[0];
-assign dout_rs = {result_val[15], result_val[14], result_val[13], result_val[12], result_val[11],
-                  result_val[10], result_val[9], result_val[8], result_val[7], result_val[6], result_val[5],
-                  result_val[4], result_val[3], result_val[2], result_val[1], result_val[0]};
-assign dout_valid_rs  = result_valid && trans_status[1];
+
+// ============ FIFO 输出路径 ============
+// FIFO 读使能: 写通道激活 + FIFO 有足够数据 + 未在读
+assign fifo_rd_en = trans_status[1] && fifo_flush_ready && !fifo_rd_valid;
+
+// FIFO force_rd: comp_done 后强制排出残余像素 (<16)
+wire force_rd;
+reg  comp_done_reg;
+wire comp_done_pos;
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        comp_done_reg <= #0.1 1'b0;
+    end
+    else begin
+        comp_done_reg <= #0.1 comp_done;
+    end
+end
+assign comp_done_pos = comp_done & ~comp_done_reg;
+assign force_rd = (comp_done_pos || fifo_drain) && !fifo_empty && !fifo_flush_ready;
+
+// dout 从 FIFO 读取 (替代原来的 result_val 拼接)
+// 保持 dout_valid 直到 DMA 握手完成 (dout_ready 拉高)
+reg dout_hold;
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        dout_hold <= #0.1 1'b0;
+    else if (fifo_rd_valid && trans_status[1])
+        dout_hold <= #0.1 1'b1;
+    else if (dout_hold && dout_ready)
+        dout_hold <= #0.1 1'b0;
+end
+
+assign dout_rs = fifo_rd_data;
+assign dout_valid_rs  = dout_hold;
 assign resize_done = result_valid;
 
 // 实例化 AVR 寄存器切片模块 (avr_rs)
-// 作用：隔离组合逻辑路径，改善时序，并提供背压处理能力
 avr_rs #(.DW(512)) U_avr_rs(
-    .m_data      ( dout_rs         ),// I - 主接口数据输入
-    .m_valid     ( dout_valid_rs   ),// I - 主接口有效信号
-    .m_ready     ( dout_ready_rs   ),// O - 主接口就绪信号
+    .m_data      ( dout_rs         ),
+    .m_valid     ( dout_valid_rs   ),
+    .m_ready     ( dout_ready_rs   ),
 
-    .s_data      ( dout            ),// O - 从接口数据输出
-    .s_valid     ( dout_valid      ),// O - 从接口有效信号
-    .s_ready     ( dout_ready      ),// I - 从接口就绪信号
+    .s_data      ( dout            ),
+    .s_valid     ( dout_valid      ),
+    .s_ready     ( dout_ready      ),
 
     .clk         ( clk            ),
     .rst_n       ( rst_n          )
+);
+
+// ============ 例化 resize_fifo ============
+resize_fifo #(
+    .FIFO_DEPTH(32),
+    .PIXEL_W(32)
+) U_RESIZE_FIFO (
+    .clk            ( clk            ),
+    .rst_n          ( rst_n          ),
+    .batch_wr_en    ( batch_wr_en    ),
+    .batch_wr_data  ( batch_wr_data  ),
+    .batch_wr_count ( batch_wr_count ),
+    .rd_en          ( fifo_rd_en     ),
+    .force_rd    ( force_rd       ),
+    .rd_data     ( fifo_rd_data   ),
+    .rd_valid    ( fifo_rd_valid  ),
+    .fifo_cnt    ( fifo_cnt       ),
+    .flush_ready ( fifo_flush_ready ),
+    .fifo_empty  ( fifo_empty     ),
+    .fifo_full   ( fifo_full      )
 );
 
 

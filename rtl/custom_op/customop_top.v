@@ -153,6 +153,12 @@ module customop_top(
     wire              axis_cal_status_rs;
     wire              resize_status_rs;
 
+    //Resize crop signals
+    wire              crop_enable;
+    wire [15:0]       crop_size;
+    wire [15:0]       crop_off_x;
+    wire [15:0]       crop_off_y;
+
     //Resize axis signals
     wire [15:0]       resize_ratio_less;
     wire [15:0]       resize_ratio_greater;
@@ -170,6 +176,7 @@ module customop_top(
     wire [15:0]       arsize_rs_gen;
     wire [31:0]       awbase_rs_gen;
     wire [15:0]       awsize_rs_gen;
+    wire [31:0]       awbase_comb_rs;
     wire              rs_first_line;
     wire              rs_last_line;
 
@@ -179,6 +186,10 @@ module customop_top(
     wire              rs_dout_ready;
     wire              rs_din_ready;
     wire              rs_resize_done;
+    wire              fifo_flush_ready_rs;
+    wire              fifo_empty_rs;
+    wire              src_done_rs;
+    wire              fifo_drain_rs;
 
     //Arbiter signals
     wire [31:0]       arb_arbase_gather;
@@ -303,7 +314,7 @@ module customop_top(
           .rfu_wreg3     ( hd_cal_percision ),                                              
           .rfu_wreg4     ( resize_ratio_less),                                              
           .rfu_wreg5     ( resize_ratio_greater),                                              
-          .rfu_wreg6     (                  ),                                              
+          .rfu_wreg6     ( crop_enable      ),                                   
           .rfu_wreg7     (                  ),                                              
           .rfu_wreg8     (                  ),                                              
           .rfu_wreg9     (                  ),
@@ -339,6 +350,7 @@ module customop_top(
        .rd_indices       ( rd_indices       ), // output
        .gen_status       ( gen_status       ), // output
        .trans_data       ( trans_data       ), // output
+
        .state            ( gather_state     ), // output
 
        .clk              ( clk              ), // input
@@ -576,6 +588,7 @@ module customop_top(
       .trans_status     ( trans_status_hd  ), // output [1:0]
       .gen_status       ( gen_status_hd    ), // output
       .fwht_status      ( fwht_status_hd   ), // output
+
       .state            ( hadamard_state   ), // output
 
       .clk              ( clk              ),
@@ -644,8 +657,12 @@ module customop_top(
       .arsize_rs_gen   ( arsize_rs_gen    ), // input
       .awbase_rs_gen   ( awbase_rs_gen    ), // input
       .awsize_rs_gen   ( awsize_rs_gen    ), // input
+      .awbase_comb     ( awbase_comb_rs   ), // input
       .rs_addr_gen_valid( rs_addr_gen_valid ), // input
       .rs_first_line   ( rs_first_line     ), // input
+      .fifo_flush_ready ( fifo_flush_ready_rs ),
+      .fifo_empty       ( fifo_empty_rs       ),
+      .src_done         ( src_done_rs         ),
       .rs_last_line    ( rs_last_line      ), // input
       .resize_done      ( rs_resize_done    ), // input - from resize core
       .axis_done        ( axis_done_axis     ), // input - from resize_axis
@@ -664,6 +681,7 @@ module customop_top(
       .axis_pre_cal    ( axis_pre_cal_rs   ), // output
       .axis_cal_status ( axis_cal_status_rs ), // output
       .resize_status    ( resize_status_rs  ), // output
+      .fifo_drain       ( fifo_drain_rs       ),
       .state            ( resize_state     ), // output
 
       .clk              ( clk              ),
@@ -684,6 +702,11 @@ module customop_top(
       .wwidth_rs       ( wwidth_rs        ), // input [15:0]
       .wheight_rs      ( wheight_rs       ), // input [15:0]
 
+      .crop_enable     ( crop_enable      ), // input
+      .crop_size       ( crop_size        ), // output [15:0]
+      .crop_off_x      ( crop_off_x       ), // output [15:0]
+      .crop_off_y      ( crop_off_y       ), // output [15:0]
+
       .data_valid      ( data_valid_axis   ), // output [7:0]
       .x_delta         ( x_delta_axis      ), // output [255:0]
       .y_delta         ( y_delta_axis      ), // output [7:0]
@@ -702,15 +725,16 @@ module customop_top(
       .rd_second       ( rd_second_rs     ), // input
       .gen_status      ( gen_status_rs     ), // input
 
+      .crop_off_x      ( crop_off_x       ), // input [15:0]
+      .crop_off_y      ( crop_off_y       ), // input [15:0]
+      .crop_size       ( crop_size        ), // input [15:0]
+
       .rbase_rs        ( rbase_rs         ), // input [31:0]
       .rwidth_rs       ( rwidth_rs        ), // input [15:0]
-      .rheight_rs      ( rheight_rs       ), // input [15:0]
-      .wwidth_rs       ( wwidth_rs        ), // input [15:0]
       .wheight_rs      ( wheight_rs       ), // input [15:0]
+      .dst_width       ( wwidth_rs        ), // input [15:0]
       .wbase_rs        ( wbase_rs         ), // input [31:0]
 
-      .data_valid      ( data_valid_axis   ), // input [7:0]
-      .y_delta         ( y_delta_axis      ), // input [7:0]
       .y_bias          ( y_bias_axis       ), // input [15:0]
 
       .rs_addr_gen_valid( rs_addr_gen_valid ), // output
@@ -719,8 +743,10 @@ module customop_top(
       .arsize_rs_gen   ( arsize_rs_gen    ), // output [15:0]
       .awbase_rs_gen   ( awbase_rs_gen    ), // output [31:0]
       .awsize_rs_gen   ( awsize_rs_gen    ), // output [15:0]
+      .awbase_comb     ( awbase_comb_rs   ), // output [31:0]
       .rs_first_line   ( rs_first_line     ), // output
       .rs_last_line    ( rs_last_line      ), // output
+      .src_done         ( src_done_rs         ), // output
 
       .comp_done_rs    ( comp_done_rs      ), // input
 
@@ -751,6 +777,10 @@ module customop_top(
 
       .comp_done       ( comp_done_rs      ), // input
       .resize_done     ( rs_resize_done    ), // output
+
+      .fifo_flush_ready ( fifo_flush_ready_rs ),
+      .fifo_empty       ( fifo_empty_rs       ),
+      .fifo_drain       ( fifo_drain_rs       ),
 
       .clk              ( clk              ),
       .rst_n            ( rst_n_1          )

@@ -19,9 +19,13 @@ module resize_fsm (
     input [15:0]        arsize_rs_gen,
     input [31:0]        awbase_rs_gen,
     input [15:0]        awsize_rs_gen,
+    input [31:0]        awbase_comb,     // 组合逻辑写地址 (WAIT_DRAIN 循环用)
     input               rs_addr_gen_valid,
     input               rs_first_line,
     input               rs_last_line,
+    input               fifo_flush_ready,// FIFO >= 16 pixels ready
+    input               fifo_empty,      // FIFO empty
+    input               src_done,        // all source blocks done
     input               resize_done,     // resize operation complete
     input               axis_done,       // axis calibration complete
     input               axis_pre_cal_done,// axis pre-calculation complete
@@ -42,6 +46,7 @@ module resize_fsm (
     output reg          axis_pre_cal,    // axis pre-calculation status
     output reg          axis_cal_status, // axis calibration status
     output reg          resize_status,   // resize operation status
+    output reg          fifo_drain,      // force FIFO drain
     output [3:0]        state,
 
     input               clk,
@@ -59,8 +64,10 @@ localparam  RESIZE = 4'd6        ;
 localparam  WR_PIPELINE = 4'd7   ;
 localparam  WR_ONLY = 4'd8       ;
 localparam  COMP_DONE = 4'd9     ;
+localparam  WAIT_DRAIN = 4'd10   ;  // 源块处理完毕，排空 FIFO 残余
 
 reg         rd_done_reg;
+reg         rd_done_reg_1;
 reg         wr_done_reg;
 reg [31:0]  arbase_rs_gen_reg;
 reg [31:0]  arbase_rs_gen_2_reg;
@@ -77,11 +84,11 @@ reg         rd_start_pulse_gen;
 
 wire        wr_ddr;
 wire        rd_ddr;
-wire        rd_done_pos;
+wire        rd_done_reg_pos;
 
-assign wr_ddr = (state == WR_PIPELINE) | (state == WR_ONLY);
+assign wr_ddr = (state == WR_PIPELINE) | (state == WR_ONLY) | (state == WAIT_DRAIN);
 assign rd_ddr = (state == WR_PIPELINE) | (state == RD_ONLY) | (state == RD_SECONE);
-assign rd_done_pos = rd_done & ~rd_done_reg;
+assign rd_done_reg_pos = rd_done_reg & ~rd_done_reg_1;
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -117,7 +124,7 @@ always @(posedge clk or negedge rst_n) begin
                 rd_start <= #0.1 1'b1;
                 rd_start_pulse_gen <= #0.1 1'b1;
             end
-            else if(rd_done_pos) begin
+            else if(rd_done_reg_pos) begin
                 rd_start <= #0.1 1'b0;
                 rd_start_pulse_gen <= #0.1 1'b0;
             end
@@ -138,10 +145,17 @@ always @(posedge clk or negedge rst_n) begin
         rd_done_reg <= #0.1 1'b0;
     else if(rd_done)
         rd_done_reg <= #0.1 1'b1;
-    else if(state == GEN_ADDR)
+    else if(state == GEN_ADDR || state == WAIT_DRAIN)
         rd_done_reg <= #0.1 1'b0;
     else
         rd_done_reg <= #0.1 rd_done_reg;
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if(!rst_n)
+        rd_done_reg_1 <= #0.1 1'b0;
+    else
+        rd_done_reg_1 <= #0.1 rd_done_reg;
 end
 
 // rd_cnt: 读完成计数器，rd_cnt==2时完成两行读取
@@ -161,7 +175,7 @@ always @(posedge clk or negedge rst_n) begin
         wr_done_reg <= #0.1 1'b0;
     else if(wr_done)
         wr_done_reg <= #0.1 1'b1;
-    else if(state == GEN_ADDR)
+    else if(state == GEN_ADDR || state == WAIT_DRAIN)
         wr_done_reg <= #0.1 1'b0;
     else
         wr_done_reg <= #0.1 wr_done_reg;
@@ -225,8 +239,17 @@ always @(*) begin
             end
         end
         GEN_ADDR: begin
-            if (rs_addr_gen_valid) begin
-                next_state = rs_first_line ? RD_ONLY : rs_last_line ? WR_ONLY : WR_PIPELINE;
+            if (src_done) begin
+                next_state = WAIT_DRAIN;
+            end
+            else if (rs_addr_gen_valid) begin
+                if (rs_first_line)
+                    next_state = RD_ONLY;
+                else if (fifo_flush_ready) begin
+                    next_state = rs_last_line ? WR_ONLY : WR_PIPELINE;
+                end
+                else
+                    next_state = RD_ONLY;  // FIFO 未就绪，只读不写
             end
         end
         RD_ONLY: begin
@@ -240,9 +263,8 @@ always @(*) begin
             end
         end
         RESIZE: begin
-            // RESIZE完成后重新进入AXIS_CAL,为下一行计算坐标
             if (resize_done) begin
-                next_state = AXIS_CAL;
+                next_state = src_done ? WAIT_DRAIN : AXIS_CAL;
             end
         end
         WR_PIPELINE: begin
@@ -252,8 +274,14 @@ always @(*) begin
         end
         WR_ONLY: begin
             if (wr_done_reg) begin
-                next_state = COMP_DONE;
+                next_state = WAIT_DRAIN;  // 回 WAIT_DRAIN 判断是否排空完毕
             end
+        end
+        WAIT_DRAIN: begin
+            if (fifo_empty)
+                next_state = COMP_DONE;
+            else
+                next_state = WR_ONLY;
         end
         COMP_DONE: begin
             next_state = IDLE;
@@ -278,6 +306,7 @@ always @(posedge clk or negedge rst_n) begin
         axis_pre_cal <= #0.1 1'b0;
         axis_cal_status <= #0.1 1'b0;
         resize_status <= #0.1 1'b0;
+        fifo_drain <= #0.1 1'b0;
     end
     else begin
         case (state)
@@ -293,6 +322,7 @@ always @(posedge clk or negedge rst_n) begin
                 axis_pre_cal <= #0.1 1'b0;
                 axis_cal_status <= #0.1 1'b0;
                 resize_status <= #0.1 1'b0;
+        fifo_drain <= #0.1 1'b0;
             end
             AXIS_PRE: begin
                 // 预计算状态: 计算裁剪区域和缩放比例
@@ -307,6 +337,7 @@ always @(posedge clk or negedge rst_n) begin
                 axis_pre_cal <= #0.1 1'b1;  // 预计算信号拉高
                 axis_cal_status <= #0.1 1'b0;
                 resize_status <= #0.1 1'b0;
+        fifo_drain <= #0.1 1'b0;
             end
             AXIS_CAL: begin
                 // 轴计算状态: 使用预计算结果计算像素坐标
@@ -321,6 +352,7 @@ always @(posedge clk or negedge rst_n) begin
                 axis_pre_cal <= #0.1 1'b0;
                 axis_cal_status <= #0.1 1'b1;  // 轴计算信号拉高
                 resize_status <= #0.1 1'b0;
+        fifo_drain <= #0.1 1'b0;
             end
             GEN_ADDR: begin
                 arbase <= #0.1 arbase;
@@ -334,6 +366,7 @@ always @(posedge clk or negedge rst_n) begin
                 axis_pre_cal <= #0.1 1'b0;
                 axis_cal_status <= #0.1 1'b0;
                 resize_status <= #0.1 1'b0;
+        fifo_drain <= #0.1 1'b0;
             end
             RD_ONLY: begin
                 arbase <= #0.1 arbase_rs_gen_reg;
@@ -347,6 +380,7 @@ always @(posedge clk or negedge rst_n) begin
                 axis_pre_cal <= #0.1 1'b0;
                 axis_cal_status <= #0.1 1'b0;
                 resize_status <= #0.1 1'b0;
+        fifo_drain <= #0.1 1'b0;
             end
             RD_SECONE: begin
                 // 读取下一行数据(用于双线性插值的第二行)
@@ -361,6 +395,7 @@ always @(posedge clk or negedge rst_n) begin
                 axis_pre_cal <= #0.1 1'b0;
                 axis_cal_status <= #0.1 1'b0;
                 resize_status <= #0.1 1'b0;
+        fifo_drain <= #0.1 1'b0;
             end
             RESIZE: begin
                 arbase <= #0.1 arbase;
@@ -387,11 +422,12 @@ always @(posedge clk or negedge rst_n) begin
                 axis_pre_cal <= #0.1 1'b0;
                 axis_cal_status <= #0.1 1'b0;
                 resize_status <= #0.1 1'b0;
+        fifo_drain <= #0.1 1'b0;
             end
             WR_ONLY: begin
                 arbase <= #0.1 32'b0;
                 arsize <= #0.1 16'b0;
-                awbase <= #0.1 awbase_rs_gen_reg;
+                awbase <= #0.1 awbase_comb;
                 awsize <= #0.1 awsize_rs_gen_reg;
                 comp_done <= #0.1 1'b0;
                 trans_status <= #0.1 2'b10;
@@ -400,6 +436,22 @@ always @(posedge clk or negedge rst_n) begin
                 axis_pre_cal <= #0.1 1'b0;
                 axis_cal_status <= #0.1 1'b0;
                 resize_status <= #0.1 1'b0;
+                fifo_drain <= #0.1 1'b1;       // drain 模式下允许 force_rd
+            end
+            WAIT_DRAIN: begin
+                // 决策状态: 有数据→WR_ONLY, 空→COMP_DONE
+                arbase <= #0.1 32'b0;
+                arsize <= #0.1 16'b0;
+                awbase <= #0.1 awbase_comb;
+                awsize <= #0.1 awsize_rs_gen_reg;
+                comp_done <= #0.1 1'b0;
+                trans_status <= #0.1 2'b00;    // WR_ONLY 产生 0→1 沿触发 wr_pos
+                rd_second <= #0.1 1'b0;
+                gen_status <= #0.1 1'd0;
+                axis_pre_cal <= #0.1 1'b0;
+                axis_cal_status <= #0.1 1'b0;
+                resize_status <= #0.1 1'b0;
+                fifo_drain <= #0.1 1'b0;
             end
             COMP_DONE: begin
                 arbase <= #0.1 32'b0;
@@ -413,6 +465,7 @@ always @(posedge clk or negedge rst_n) begin
                 axis_pre_cal <= #0.1 1'b0;
                 axis_cal_status <= #0.1 1'b0;
                 resize_status <= #0.1 1'b0;
+        fifo_drain <= #0.1 1'b0;
             end
             default: begin
                 arbase <= #0.1 32'b0;
@@ -426,6 +479,7 @@ always @(posedge clk or negedge rst_n) begin
                 axis_pre_cal <= #0.1 1'b0;
                 axis_cal_status <= #0.1 1'b0;
                 resize_status <= #0.1 1'b0;
+        fifo_drain <= #0.1 1'b0;
             end
         endcase
     end

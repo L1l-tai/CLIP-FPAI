@@ -108,7 +108,6 @@ module gather_sim;
     // 修改: 增加内存大小至 1024 行，每行 512-bit
     reg [511:0] mem [0:2047]; 
     integer i;
-    reg error_flag;
 
     // 地址到内存索引的映射函数 (以 64-byte/512-bit 行为单位)
     function automatic integer get_mem_index;
@@ -126,12 +125,9 @@ module gather_sim;
         end
     endfunction
 
-    integer idx_addr;
-    integer idx_val;
-    integer mem_idx;
-    integer byte_off;
-    integer expected_indices [INDICES_LEN];
     reg read_busy;
+    reg pending_awvalid;
+    reg [31:0] pending_awaddr;
 
     // 复位序列
     initial begin
@@ -150,6 +146,8 @@ module gather_sim;
         itf_rdata = 0;
         itf_rvalid = 0;
         read_busy = 0;
+        pending_awvalid = 0;
+        pending_awaddr = 0;
 
         // 等待全局复位
         #100;
@@ -164,56 +162,11 @@ module gather_sim;
             mem[i] = 512'd0;
         end
 
-        // --- 准备测试数据 ---
-        
-        // 1. 初始化索引 (Indices)
-        // 修改: 循环次数改为 INDICES_LEN (20)
+        // --- 从文件加载测试数据 ---
         $display("Loading Indices...");
-        
-        // 索引存放于 IDX_BASE_ADDR
-        // 20 个索引 * 4 字节 = 80 字节
-        // Line 0 (0x1000): 存放 Index[0..15] (64 Bytes)
-        // Line 1 (0x1040): 存放 Index[16..19] (16 Bytes)
-        
-        for (i = 0; i < INDICES_LEN; i++) begin
-            // 生成简单的递增索引用于验证，或者保持之前的乱序逻辑
-            // 这里使用 i % 16 确保索引在源数据的前几个元素中，避免访问未初始化内存
-            idx_val = i % 16; 
-            
-            idx_addr = IDX_BASE_ADDR + i * 4;
-            mem_idx = get_mem_index(idx_addr);
-            byte_off = get_byte_offset(idx_addr);
-            
-            // 存入内存
-            mem[mem_idx][byte_off*8 +: 32] = idx_val;
-            $display("  Index[%d] = %d @ Addr 0x%08X", i, idx_val, idx_addr);
-        end
-
-        // 2. 初始化源数据 (Source Data)
-        // 修改: 根据新的 Stride 初始化源数据
-        // 每个元素占据 DATA_WIDTH_BYTES (512 Bytes = 8 Beats)
+        $readmemh("gather-input-idx.mem", mem, get_mem_index(IDX_BASE_ADDR));
         $display("Loading Source Data...");
-        for (i = 0; i < DATA_LEN; i++) begin
-            integer src_base_addr;
-            integer k;
-            src_base_addr = SRC_BASE_ADDR + i * DATA_WIDTH_BYTES;
-            
-            // 填充该元素对应的 8 个 Beats
-            for (k = 0; k < DATA_WIDTH_BEATS; k++) begin
-                integer curr_addr;
-                integer curr_idx;
-                
-                curr_addr = src_base_addr + k * 64;
-                curr_idx = get_mem_index(curr_addr);
-                
-                if (k == 0) begin
-                    mem[curr_idx] = i+k;
-                end else begin
-                    mem[curr_idx] = i+k; // 或其他填充
-                end
-            end
-            $display("  Src[%d] Base @ 0x%08X (Stride %d Beats)", i, src_base_addr, DATA_WIDTH_BEATS);
-        end
+        $readmemh("gather-input-data.mem", mem, get_mem_index(SRC_BASE_ADDR));
 
         // --- 通过寄存器访问进行配置阶段 ---
         
@@ -241,81 +194,52 @@ module gather_sim;
         ra_write_reg(16'h00, 32'h0000_0001);
 
         // --- DMA传输阶段 ---
-        
-        error_flag = 0;
-        
-        // 运行仿真直到完成或超时
+
+        // 监控完成 + 超时
         fork
             begin
-                // 超时监视器
                 #100000;
                 $display("ERROR: Simulation Timeout!");
                 $finish;
             end
             begin
-                // 监控完成状态
-                wait (reset_reg == 1); 
+                wait (reset_reg == 1);
                 $display("Computation Done Signal Detected.");
             end
         join_none
 
         // 服务 AXI 事务
         serve_axi_transactions();
+        #50;
 
         $display("DMA Transfer Completed.");
 
-        // --- 验证阶段 ---
-        $display("Verifying Results...");
-        
-        // 预期结果:
-        // Indices[i] = i % 16
-        // Src[k] 的第一个 Beat 的低 64位 = k
-        // Expected Dest[i] 的第一个 Beat 的低 64位 = Indices[i]
-        
-        for (i = 0; i < INDICES_LEN; i++) begin
-            expected_indices[i] = i % 16;
-        end
+        // --- 将硬件输出写入文件 ---
+        $display("Writing hardware output...");
+        write_mem_to_file("gather-output.mem",
+                          DST_BASE_ADDR, INDICES_LEN * DATA_WIDTH_BEATS);
 
-        for (i = 0; i < INDICES_LEN; i++) begin
-            integer dst_base_addr;
-            integer dst_idx;
-            reg [63:0] actual_val;
-            reg [63:0] expected_val;
-            
-            // 目的地址基址 + 偏移
-            dst_base_addr = DST_BASE_ADDR + i * DATA_WIDTH_BYTES;
-            
-            // 只验证每个元素的第一个 Beat (Offset 0)
-            dst_idx = get_mem_index(dst_base_addr);
-            
-            actual_val = mem[dst_idx][63:0];
-            
-            // 预期值: Src[expected_indices[i]] 的低 64 位
-            // Src[k] 的低 64 位被设置为 k
-            expected_val = expected_indices[i];
-            
-            if (actual_val !== expected_val) begin
-                $display("ERROR at Output[%d]: Addr 0x%08X. Expected %d (Src[%d]), Got %d", 
-                         i, dst_base_addr, expected_val, expected_indices[i], actual_val);
-                error_flag = 1;
-            end else begin
-                $display("PASS at Output[%d]: Addr 0x%08x. %d == Src[%d]", i, dst_base_addr, actual_val, expected_indices[i]);
-            end
-        end
-
-        if (!error_flag) begin
-            $display("========================================");
-            $display("SIMULATION PASSED");
-            $display("========================================");
-        end else begin
-            $display("========================================");
-            $display("SIMULATION FAILED");
-            $display("========================================");
-        end
+        $display("========================================");
+        $display("SIMULATION COMPLETED");
+        $display("========================================");
 
         #100;
         $finish;
     end
+
+    // $writememh 写入内存数据
+    task write_mem_to_file;
+        input string filename;
+        input [31:0] base_addr;
+        input integer num_blocks;
+        integer start_idx, end_idx;
+        begin
+            start_idx = get_mem_index(base_addr);
+            end_idx   = get_mem_index(base_addr + (num_blocks - 1) * 64);
+            $writememh(filename, mem, start_idx, end_idx);
+            $display("Wrote %d blocks to %s", num_blocks, filename);
+        end
+    endtask
 
     // 向寄存器访问接口写入的任务
     task ra_write_reg;
@@ -397,15 +321,18 @@ module gather_sim;
                     itf_awready <= 0;
                 end
 
-                // 处理写数据通道 (W)
-                // 在 dma.v 中，awvalid 和 awdata 同时有效
+                // 处理写数据通道 (W) - 延迟一拍写入 (匹配 DMA awdata 时序)
                 if (itf_awvalid && itf_awready) begin
+                    pending_awvalid <= 1;
+                    pending_awaddr <= itf_awaddr;
+                end
+                if (pending_awvalid) begin
                     integer w_idx;
-                    w_idx = get_mem_index(itf_awaddr);
+                    w_idx = get_mem_index(pending_awaddr);
                     mem[w_idx] <= itf_awdata;
-                    $display("TB: Wrote Data 0x%16X to Addr 0x%08X (Idx: %d)", itf_awdata[63:0], itf_awaddr, w_idx);
+                    $display("TB: Wrote Data to Addr 0x%08X (Idx: %d)", pending_awaddr, w_idx);
+                    pending_awvalid <= 0;
                     trans_count = trans_count + 1;
-                    $display("TB: The %dth transportation", trans_count);
                 end
             end
         end

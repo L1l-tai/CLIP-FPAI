@@ -3,27 +3,24 @@
 // Project       :
 // Create Date   : 2026.04.27
 // Description   : Resize address generation module
-//
-//--------------------------------------------------------------------------------
-// Modification History :
 //================================================================================
 
 module resize_addr_gen(
     input        [1:0]      trans_status  ,
     input                   rd_second     ,
     input                   gen_status    ,
+
+    input        [15 : 0]   crop_off_x   ,
+    input        [15 : 0]   crop_off_y   ,
+    input        [15 : 0]   crop_size    ,
+
     input        [31 : 0]   rbase_rs     ,
     input        [15 : 0]   rwidth_rs     ,
-    input        [15 : 0]   rheight_rs    ,
-    //需要读写的总数据包数(512bit)
-    input        [15 : 0]   wwidth_rs    ,
     input        [15 : 0]   wheight_rs   ,
+    input        [15 : 0]   dst_width    ,
     input        [31 : 0]   wbase_rs     ,
 
-    // 来自 resize_axis 的坐标映射信号
-    input        [8:0]     data_valid,        // 16个数据中的有效个数
-    input        [7:0]     y_delta,          // P点相对于下一行的y偏移
-    input        [15:0]    y_bias,           // y轴偏移量对应的行
+    input        [15:0]     y_bias        ,
 
     output  reg             rs_addr_gen_valid ,
     output  reg  [31 : 0]   arbase_rs_gen,
@@ -31,197 +28,167 @@ module resize_addr_gen(
     output  reg  [15 : 0]   arsize_rs_gen,
     output  reg  [31 : 0]   awbase_rs_gen,
     output  reg  [15 : 0]   awsize_rs_gen,
+    output  wire [31 : 0]   awbase_comb,     // 组合逻辑写地址, 始终反映当前 rs_wr_cnt
     output  reg             rs_first_line,
     output  reg             rs_last_line,
+    output  wire            src_done     ,
 
-    input                   comp_done_rs     ,
+    input                   comp_done_rs ,
 
-    input                   clk           ,
+    input                   clk          ,
     input                   rst_n
 );
 
-localparam RS_WIDTH = 1;   // only 1 beats per row
-localparam RS_SHIFT = 4;   // 每次迭代地址偏移16字节 (512/32 2^4)
+    localparam RS_WIDTH = 1;
+    localparam RS_SHIFT = 6;   // 64 bytes per block
 
-reg     [15 : 0]            rs_rd_cnt;
-reg     [15 : 0]            rs_wr_cnt;
-reg     [1 : 0]             trans_status_reg;
+    // ============ 寄存器声明 ============
+    reg [15:0] rs_rd_cnt;
+    reg [15:0] rs_wr_cnt;
+    reg [15:0] total_rd_cnt;
+    reg [15:0] y_bias_prev;
+    reg [ 1:0] trans_status_reg;
+    reg [31:0] rbase_rs_reg;
+    reg [31:0] wbase_rs_reg;
+    reg        pipe_valid;
 
+    // ============ 连线声明 ============
+    wire       rd_pos;
+    wire       wr_pos;
+    wire       row_changed;
+    wire [15:0] addr_rd_cnt;
+    wire [15:0] rs_num;
+    wire [31:0] arbase_offset_c;
+    wire [31:0] y_bias_x_rwidth;
+    wire [31:0] y_bias_p1_x_rwidth;
+    wire [31:0] arbase_rs_gen_c;
+    wire [31:0] arbase_rs_gen_2_c;
+    wire [31:0] awbase_rs_gen_c;
 
-wire       [31 : 0]         arbase_rs_gen_c;
-wire       [31 : 0]         arbase_rs_gen_2_c;
-wire       [15 : 0]         arsize_rs_gen_c;
-wire       [31 : 0]         awbase_rs_gen_c;
-wire       [15 : 0]         awsize_rs_gen_c;
-wire       [31 : 0]         arbase_offset_c;
-wire       [31 : 0]         awbase_offset_c;
+    // ============ 边沿检测 ============
+    assign rd_pos = ~trans_status_reg[0] & trans_status[0];
+    assign wr_pos = ~trans_status_reg[1] & trans_status[1];
 
-wire       [15 : 0]         rs_num;
-wire                        rd_pos;
-wire                        wr_pos;
+    // ============ 行切换检测 ============
+    assign row_changed = (y_bias != y_bias_prev);
 
-// 第一级流水线: 乘法结果
-wire    [31:0]             y_bias_x_rwidth;     // y_bias * rwidth_rs * 4
-wire    [31:0]             y_bias_p1_x_rwidth;   // (y_bias + 1) * rwidth_rs * 4
+    // ============ 常数计算 ============
+    wire [15:0] dst_blocks_per_row  = (dst_width + 15) >> 4;
+    wire [15:0] src_blocks_per_row  = (crop_size + 15) >> 4;
+    wire [15:0] total_src_blocks    = wheight_rs * src_blocks_per_row;
 
-// 第一级流水线寄存器
-reg     [31:0]             rbase_rs_reg;
-reg     [31:0]            wbase_rs_reg;
-reg     [31:0]             arbase_offset_r;
-reg     [31:0]             y_bias_x_rwidth_r;
-reg     [31:0]             y_bias_p1_x_rwidth_r;
-reg                         pipe_valid;            // 第一级流水线有效信号(延迟gen_status一个周期)
+    assign rs_num    = wheight_rs * dst_blocks_per_row;
+    assign src_done  = (total_rd_cnt >= total_src_blocks);
 
-// 第二级流水线结果
-wire    [31:0]             arbase_rs_gen_c_full;
-wire    [31:0]             arbase_rs_gen_2_c_full;
+    // ============ 地址计算 (组合逻辑) ============
+    assign y_bias_x_rwidth    = (y_bias + crop_off_y) * (rwidth_rs << 2);
+    assign y_bias_p1_x_rwidth = (y_bias + crop_off_y + 16'd1) * (rwidth_rs << 2);
 
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        trans_status_reg <= #0.1 2'b00;
+    assign addr_rd_cnt      = (gen_status && row_changed) ? 16'd0 : rs_rd_cnt;
+    assign arbase_offset_c  = crop_off_x * 4 + (addr_rd_cnt << RS_SHIFT);
+
+    assign arbase_rs_gen_c  = rbase_rs_reg + y_bias_x_rwidth + arbase_offset_c;
+    assign arbase_rs_gen_2_c = rbase_rs_reg + y_bias_p1_x_rwidth + arbase_offset_c;
+    assign awbase_rs_gen_c  = wbase_rs_reg + (rs_wr_cnt << RS_SHIFT);
+    assign awbase_comb      = awbase_rs_gen_c;
+
+    // ============ trans_status 延迟 ============
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            trans_status_reg <= #0.1 2'b00;
+        else
+            trans_status_reg <= #0.1 trans_status;
     end
-    else begin
-        trans_status_reg <= #0.1 trans_status;
-    end
-end
 
-
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        rs_rd_cnt <= #0.1 16'd0;
-    end
-    else begin
-        if(rd_pos & ~rd_second) begin
-            //每完成一次地址生成，即进入下一个状态时，cnt加1
-            rs_rd_cnt <= #0.1 rs_rd_cnt + 16'd1;
-        end
-        else if(comp_done_rs) begin
-            rs_rd_cnt <= #0.1 16'd0;
+    // ============ rs_rd_cnt / total_rd_cnt / y_bias_prev ============
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            rs_rd_cnt    <= #0.1 16'd0;
+            total_rd_cnt <= #0.1 16'd0;
+            y_bias_prev  <= #0.1 16'd0;
         end
         else begin
-            rs_rd_cnt <= #0.1 rs_rd_cnt;
+            if (gen_status) begin
+                y_bias_prev <= #0.1 y_bias;
+                if (row_changed)
+                    rs_rd_cnt <= #0.1 16'd0;
+            end
+            if (rd_pos & ~rd_second) begin
+                rs_rd_cnt    <= #0.1 rs_rd_cnt + 16'd1;
+                total_rd_cnt <= #0.1 total_rd_cnt + 16'd1;
+            end
+            if (comp_done_rs) begin
+                rs_rd_cnt    <= #0.1 16'd0;
+                total_rd_cnt <= #0.1 16'd0;
+                y_bias_prev  <= #0.1 16'd0;
+            end
         end
     end
-end
 
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        rs_wr_cnt <= #0.1 16'd0;
-    end
-    else begin
-        if(wr_pos) begin
-            //每完成一次地址生成，即进入下一个状态时，cnt加1
-            rs_wr_cnt <= #0.1 rs_wr_cnt + 16'd1;
-        end
-        else if(comp_done_rs) begin
+    // ============ rs_wr_cnt ============
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
             rs_wr_cnt <= #0.1 16'd0;
+        else if (wr_pos)
+            rs_wr_cnt <= #0.1 rs_wr_cnt + 16'd1;
+        else if (comp_done_rs)
+            rs_wr_cnt <= #0.1 16'd0;
+    end
+
+    // ============ 第一级流水线 (gen_status → latch) ============
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            rbase_rs_reg <= #0.1 32'd0;
+            wbase_rs_reg <= #0.1 32'd0;
+            pipe_valid   <= #0.1 1'b0;
+        end
+        else if (gen_status) begin
+            rbase_rs_reg <= #0.1 rbase_rs;
+            wbase_rs_reg <= #0.1 wbase_rs;
+            pipe_valid   <= #0.1 1'b1;
         end
         else begin
-            rs_wr_cnt <= #0.1 rs_wr_cnt;
+            pipe_valid <= #0.1 1'b0;
         end
     end
-end
 
-always @(posedge clk or negedge rst_n) begin
-    if(!rst_n) begin
-        rs_addr_gen_valid <= #0.1 1'b0;
-        arbase_rs_gen <= #0.1 32'b0;
-        arbase_rs_gen_2 <= #0.1 32'b0;
-        arsize_rs_gen <= #0.1 16'b0;
-        awbase_rs_gen <= #0.1 32'b0;
-        awsize_rs_gen <= #0.1 16'b0;
-    end
-    else begin
-        if(pipe_valid) begin
-            // pipe_valid 为高时(第一级计算结果就绪)，输出第二级计算结果
+    // ============ 第二级流水线 (pipe_valid → output) ============
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            rs_addr_gen_valid <= #0.1 1'b0;
+            arbase_rs_gen     <= #0.1 32'd0;
+            arbase_rs_gen_2   <= #0.1 32'd0;
+            arsize_rs_gen     <= #0.1 16'd0;
+            awbase_rs_gen     <= #0.1 32'd0;
+            awsize_rs_gen     <= #0.1 16'd0;
+        end
+        else if (pipe_valid) begin
             rs_addr_gen_valid <= #0.1 1'b1;
-            arbase_rs_gen <= #0.1 arbase_rs_gen_c;
-            arbase_rs_gen_2 <= #0.1 arbase_rs_gen_2_c;
-            arsize_rs_gen <= #0.1 arsize_rs_gen_c;
-            awbase_rs_gen <= #0.1 awbase_rs_gen_c;
-            awsize_rs_gen <= #0.1 awsize_rs_gen_c;
+            arbase_rs_gen     <= #0.1 arbase_rs_gen_c;
+            arbase_rs_gen_2   <= #0.1 arbase_rs_gen_2_c;
+            arsize_rs_gen     <= #0.1 RS_WIDTH;
+            awbase_rs_gen     <= #0.1 awbase_rs_gen_c;
+            awsize_rs_gen     <= #0.1 RS_WIDTH;
         end
         else begin
             rs_addr_gen_valid <= #0.1 1'b0;
-            arbase_rs_gen <= arbase_rs_gen;
-            arbase_rs_gen_2 <= arbase_rs_gen_2;
-            arsize_rs_gen <= arsize_rs_gen;
-            awbase_rs_gen <= awbase_rs_gen;
-            awsize_rs_gen <= awsize_rs_gen;
         end
     end
-end
 
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        rs_last_line <= #0.1 1'b0;
-        rs_first_line <= #0.1 1'b0;
-    end
-    else begin
-        if(gen_status) begin
-            rs_last_line <= #0.1 (rs_wr_cnt == rs_num - 1);
-            rs_first_line <= #0.1 (rs_rd_cnt == 16'd0);
-        end
-        else if(comp_done_rs) begin
-            rs_last_line <= #0.1 1'b0;
+    // ============ rs_first_line / rs_last_line ============
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
             rs_first_line <= #0.1 1'b0;
+            rs_last_line  <= #0.1 1'b0;
         end
-        else begin
-            rs_last_line <= #0.1 rs_last_line;
-            rs_first_line <= #0.1 rs_first_line;
+        else if (gen_status) begin
+            rs_first_line <= #0.1 (total_rd_cnt == 16'd0);
+            rs_last_line  <= #0.1 (rs_wr_cnt == rs_num - 1);
+        end
+        else if (comp_done_rs) begin
+            rs_first_line <= #0.1 1'b0;
+            rs_last_line  <= #0.1 1'b0;
         end
     end
-end
-
-assign rs_num = wheight_rs * (rwidth_rs >> RS_SHIFT);  // 总行数用于判断 last_line
-
-assign rd_pos = ~trans_status_reg[0] & trans_status[0];
-assign wr_pos = ~trans_status_reg[1] & trans_status[1];
-
-// 第一级流水线: 乘法计算
-assign y_bias_x_rwidth = y_bias * (rwidth_rs << 2);      // y_bias * rwidth_rs * 4
-assign y_bias_p1_x_rwidth = (y_bias + 16'd1) * (rwidth_rs << 2);  // (y_bias+1) * rwidth_rs * 4
-
-// 第二级流水线: 加法计算
-assign arbase_rs_gen_c_full = rbase_rs_reg + y_bias_x_rwidth_r + arbase_offset_r;
-assign arbase_rs_gen_2_c_full = rbase_rs_reg + y_bias_p1_x_rwidth_r + arbase_offset_r;
-
-// 第一级流水线寄存器: 锁存乘法结果和有效信号
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        wbase_rs_reg <= #0.1 32'd0;
-        rbase_rs_reg <= #0.1 32'd0;
-        arbase_offset_r <= #0.1 32'd0;
-        y_bias_x_rwidth_r <= #0.1 32'd0;
-        y_bias_p1_x_rwidth_r <= #0.1 32'd0;
-        pipe_valid <= #0.1 1'b0;
-    end
-    else if (gen_status) begin
-        wbase_rs_reg <= #0.1 wbase_rs;
-        rbase_rs_reg <= #0.1 rbase_rs;
-        arbase_offset_r <= #0.1 arbase_offset_c;
-        y_bias_x_rwidth_r <= #0.1 y_bias_x_rwidth;
-        y_bias_p1_x_rwidth_r <= #0.1 y_bias_p1_x_rwidth;
-        pipe_valid <= #0.1 gen_status;  // gen_status 延迟一个周期作为第一级有效信号
-    end
-    else begin
-        rbase_rs_reg <= #0.1 rbase_rs_reg;
-        wbase_rs_reg <= #0.1 wbase_rs_reg;
-        arbase_offset_r <= #0.1 arbase_offset_r;
-        y_bias_x_rwidth_r <= #0.1 y_bias_x_rwidth_r;
-        y_bias_p1_x_rwidth_r <= #0.1 y_bias_p1_x_rwidth_r;
-        pipe_valid <= #0.1 pipe_valid;
-    end
-end
-
-assign arbase_offset_c = rs_rd_cnt << RS_SHIFT ;  // 16 bytes per beat
-assign arbase_rs_gen_c = arbase_rs_gen_c_full;
-// 第二行基地址 = 第一行基地址 + 一行字节数 (rwidth_rs * 4 bytes)
-assign arbase_rs_gen_2_c = arbase_rs_gen_2_c_full;
-assign arsize_rs_gen_c = RS_WIDTH;
-
-assign awbase_offset_c = rs_wr_cnt << RS_SHIFT;
-assign awbase_rs_gen_c = wbase_rs_reg + awbase_offset_c;
-assign awsize_rs_gen_c = RS_WIDTH;
 
 endmodule
