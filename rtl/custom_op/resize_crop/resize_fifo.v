@@ -38,8 +38,12 @@ module resize_fifo #(
     assign fifo_empty  = (pixel_count == 6'd0);
     assign fifo_full   = (pixel_count == FIFO_DEPTH);
 
-    // 从 512-bit 拆出 16 个像素
     wire [31:0] batch_pixel [15:0];
+    wire [511:0] slot_a;
+    wire [511:0] slot_b;
+    wire [511:0] rd_data_comb;
+
+    // 从 512-bit 拆出 16 个像素
     genvar bp;
     generate
         for (bp = 0; bp < 16; bp = bp + 1) begin : bp_gen
@@ -47,35 +51,16 @@ module resize_fifo #(
         end
     endgenerate
 
-    // 读地址计算: DEPTH=32, 5-bit 自然截断 = 模 32
-    function [4:0] rd_addr;
-        input [4:0] base;
-        input [4:0] offset;
-        begin
-            rd_addr = {1'b0, base} + {1'b0, offset};
-        end
-    endfunction
-
-    // 组合逻辑读出
-    wire [511:0] rd_data_comb;
-    assign rd_data_comb = {
-        pixel_mem[rd_addr(rd_ptr, 5'd15)],
-        pixel_mem[rd_addr(rd_ptr, 5'd14)],
-        pixel_mem[rd_addr(rd_ptr, 5'd13)],
-        pixel_mem[rd_addr(rd_ptr, 5'd12)],
-        pixel_mem[rd_addr(rd_ptr, 5'd11)],
-        pixel_mem[rd_addr(rd_ptr, 5'd10)],
-        pixel_mem[rd_addr(rd_ptr, 5'd9)],
-        pixel_mem[rd_addr(rd_ptr, 5'd8)],
-        pixel_mem[rd_addr(rd_ptr, 5'd7)],
-        pixel_mem[rd_addr(rd_ptr, 5'd6)],
-        pixel_mem[rd_addr(rd_ptr, 5'd5)],
-        pixel_mem[rd_addr(rd_ptr, 5'd4)],
-        pixel_mem[rd_addr(rd_ptr, 5'd3)],
-        pixel_mem[rd_addr(rd_ptr, 5'd2)],
-        pixel_mem[rd_addr(rd_ptr, 5'd1)],
-        pixel_mem[rd_addr(rd_ptr, 5'd0)]
-    };
+    // 组合逻辑读出: rd_ptr 仅 0/16 两种状态, 2:1 MUX 替代 16 路加法
+    assign slot_a = {pixel_mem[15], pixel_mem[14], pixel_mem[13], pixel_mem[12],
+                     pixel_mem[11], pixel_mem[10], pixel_mem[ 9], pixel_mem[ 8],
+                     pixel_mem[ 7], pixel_mem[ 6], pixel_mem[ 5], pixel_mem[ 4],
+                     pixel_mem[ 3], pixel_mem[ 2], pixel_mem[ 1], pixel_mem[ 0]};
+    assign slot_b = {pixel_mem[31], pixel_mem[30], pixel_mem[29], pixel_mem[28],
+                     pixel_mem[27], pixel_mem[26], pixel_mem[25], pixel_mem[24],
+                     pixel_mem[23], pixel_mem[22], pixel_mem[21], pixel_mem[20],
+                     pixel_mem[19], pixel_mem[18], pixel_mem[17], pixel_mem[16]};
+    assign rd_data_comb = (rd_ptr == 5'd0) ? slot_a : slot_b;
 
     // ============ 单一 always 块: 写 + 读 (避免 pixel_count 多驱动) ============
     always @(posedge clk or negedge rst_n) begin
@@ -87,24 +72,24 @@ module resize_fifo #(
             pixel_count <= #0.1 6'd0;
         end
         else begin
-            // 批量写
-            if (batch_wr_en && (pixel_count + batch_wr_count <= FIFO_DEPTH[5:0])) begin
-                if (batch_wr_count > 5'd0)  pixel_mem[wr_ptr + 5'd0]  <= #0.1 batch_pixel[ 0];
-                if (batch_wr_count > 5'd1)  pixel_mem[wr_ptr + 5'd1]  <= #0.1 batch_pixel[ 1];
-                if (batch_wr_count > 5'd2)  pixel_mem[wr_ptr + 5'd2]  <= #0.1 batch_pixel[ 2];
-                if (batch_wr_count > 5'd3)  pixel_mem[wr_ptr + 5'd3]  <= #0.1 batch_pixel[ 3];
-                if (batch_wr_count > 5'd4)  pixel_mem[wr_ptr + 5'd4]  <= #0.1 batch_pixel[ 4];
-                if (batch_wr_count > 5'd5)  pixel_mem[wr_ptr + 5'd5]  <= #0.1 batch_pixel[ 5];
-                if (batch_wr_count > 5'd6)  pixel_mem[wr_ptr + 5'd6]  <= #0.1 batch_pixel[ 6];
-                if (batch_wr_count > 5'd7)  pixel_mem[wr_ptr + 5'd7]  <= #0.1 batch_pixel[ 7];
-                if (batch_wr_count > 5'd8)  pixel_mem[wr_ptr + 5'd8]  <= #0.1 batch_pixel[ 8];
-                if (batch_wr_count > 5'd9)  pixel_mem[wr_ptr + 5'd9]  <= #0.1 batch_pixel[ 9];
-                if (batch_wr_count > 5'd10) pixel_mem[wr_ptr + 5'd10] <= #0.1 batch_pixel[10];
-                if (batch_wr_count > 5'd11) pixel_mem[wr_ptr + 5'd11] <= #0.1 batch_pixel[11];
-                if (batch_wr_count > 5'd12) pixel_mem[wr_ptr + 5'd12] <= #0.1 batch_pixel[12];
-                if (batch_wr_count > 5'd13) pixel_mem[wr_ptr + 5'd13] <= #0.1 batch_pixel[13];
-                if (batch_wr_count > 5'd14) pixel_mem[wr_ptr + 5'd14] <= #0.1 batch_pixel[14];
-                if (batch_wr_count > 5'd15) pixel_mem[wr_ptr + 5'd15] <= #0.1 batch_pixel[15];
+            // 批量写: 无条件写入全部 16 像素, 无效数据由下一块覆盖
+            if (batch_wr_en && !fifo_full) begin
+                pixel_mem[wr_ptr + 5'd0]  <= #0.1 batch_pixel[ 0];
+                pixel_mem[wr_ptr + 5'd1]  <= #0.1 batch_pixel[ 1];
+                pixel_mem[wr_ptr + 5'd2]  <= #0.1 batch_pixel[ 2];
+                pixel_mem[wr_ptr + 5'd3]  <= #0.1 batch_pixel[ 3];
+                pixel_mem[wr_ptr + 5'd4]  <= #0.1 batch_pixel[ 4];
+                pixel_mem[wr_ptr + 5'd5]  <= #0.1 batch_pixel[ 5];
+                pixel_mem[wr_ptr + 5'd6]  <= #0.1 batch_pixel[ 6];
+                pixel_mem[wr_ptr + 5'd7]  <= #0.1 batch_pixel[ 7];
+                pixel_mem[wr_ptr + 5'd8]  <= #0.1 batch_pixel[ 8];
+                pixel_mem[wr_ptr + 5'd9]  <= #0.1 batch_pixel[ 9];
+                pixel_mem[wr_ptr + 5'd10] <= #0.1 batch_pixel[10];
+                pixel_mem[wr_ptr + 5'd11] <= #0.1 batch_pixel[11];
+                pixel_mem[wr_ptr + 5'd12] <= #0.1 batch_pixel[12];
+                pixel_mem[wr_ptr + 5'd13] <= #0.1 batch_pixel[13];
+                pixel_mem[wr_ptr + 5'd14] <= #0.1 batch_pixel[14];
+                pixel_mem[wr_ptr + 5'd15] <= #0.1 batch_pixel[15];
                 wr_ptr      <= #0.1 wr_ptr + batch_wr_count;
                 pixel_count <= #0.1 pixel_count + batch_wr_count;
             end

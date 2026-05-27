@@ -112,7 +112,6 @@ module resize_axis (
     // 当前行像素计数器
     reg     [15:0] pixel_cnt;
     reg     [15:0] pre_bias;        // Q1.7.8格式
-    wire    [31:0] ratioed_x_full;
     wire    [31:0] ratioed_x_full_add;
     wire    [15:0] ratioed_x;       // Q1.7.8格式
     wire    [31:0] ratioed_y_full;  // Q1.23.8: bit[31]=sign, bit[30:8]=int, bit[7:0]=frac
@@ -125,13 +124,13 @@ module resize_axis (
 
     // 第一级流水线计算结果 (combinational)
     wire    [255:0] x_delta_mul;    // width_ratio_greater * i 结果
-    wire    [23:0] next_bias_mul;   // next_bias 乘法结果
     wire    [7:0]  y_delta_next;    // y_delta 下一值
     wire    [15:0] y_bias_next;     // y_bias 下一值
     wire    [15:0] current_row_y_next; // current_row_y 下一值
 
     // 第一级流水线寄存器 (sequential) - 锁存第一级计算结果
     reg     [31:0] ratioed_x_full_add_r;
+    reg     [31:0] ratioed_x_full_r;
     reg     [31:0] ratioed_y_full_r;
     reg     [255:0] x_delta_mul_r;
     reg     [15:0] next_bias_mul_r;
@@ -145,6 +144,8 @@ module resize_axis (
     wire    [15:0] pre_bias_next;   // 下一周期 pre_bias
     wire    axis_cal_negedge;       // axis_cal_status 下降沿检测
     wire    axis_cal_negedge1;
+    wire    axis_cal_negedge2;
+    wire    axis_cal_negedge3;
 
     // ============ 第一级计算 ============
     // (16 + pre_bias): Q1.7.8格式, pre_bias 可能为负 → 必须用有符号加法
@@ -205,14 +206,15 @@ module resize_axis (
 
     // next_bias: width_ratio_greater(Q1.7.8) * data_valid(=ratioed_x[15:8], integer part)
     wire [23:0] next_bias_mul_comb ;
-    assign next_bias_mul_comb = width_ratio_greater * data_valid_int;
+    assign next_bias_mul_comb = width_ratio_greater * data_valid;
     // pre_bias_next = 16.0 + pre_bias - next_bias_mul_r (累积前序 pre_bias)
     wire signed [16:0] pre_bias_next_s;
     assign pre_bias_next_s = (pixel_cnt_next_r == crop_size) ? 17'd0 :
                               const_16s + pre_bias_s - $signed({1'b0, next_bias_mul_r});
     assign pre_bias_next = pre_bias_next_s[15:0];
-    assign ratioed_x_full = width_ratio_less * ratioed_x_full_add_r + {20'b0,1'b1,12'b0};
-    assign ratioed_x = ratioed_x_full[27:12];  // 截取16bit → Q1.7.8 (bit[15:8]=integer, bit[7:0]=fraction)
+    // DSP 乘积, 同时用于组合逻辑和 Stage1 寄存器 (共享同一 DSP)
+    wire [31:0] ratioed_x_full = width_ratio_less * ratioed_x_full_add + {20'b0,1'b1,12'b0};
+    assign ratioed_x = ratioed_x_full_r[27:12];  // 从寄存器取, 切断 DSP→比较器 长路径
 
     // 添加nudge值(+0.5 = +8'h80 in Q1.7.8), 再钳位 0~16
     wire [15:0] ratioed_x_rnd = ratioed_x;
@@ -223,6 +225,7 @@ module resize_axis (
     always @(posedge clk or negedge rst_n) begin
         if(!rst_n) begin
             ratioed_x_full_add_r <= #0.1 32'd0;
+            ratioed_x_full_r     <= #0.1 32'd0;
             ratioed_y_full_r <= #0.1 32'd0;
             x_delta_mul_r <= #0.1 256'd0;
             y_delta_next_r <= #0.1 8'd0;
@@ -233,6 +236,7 @@ module resize_axis (
         else if(axis_cal_status) begin
             // 第一级计算结果锁存到寄存器
             ratioed_x_full_add_r <= #0.1 ratioed_x_full_add;
+            ratioed_x_full_r     <= #0.1 width_ratio_less * ratioed_x_full_add + {20'b0,1'b1,12'b0};
             ratioed_y_full_r <= #0.1 ratioed_y_full;
             x_delta_mul_r <= #0.1 x_delta_mul;
             y_delta_next_r <= #0.1 y_delta_next;
@@ -246,18 +250,26 @@ module resize_axis (
     // axis_cal_status 延迟寄存器用于检测下降沿
     reg axis_cal_status_reg;
     reg axis_cal_status_reg1;
+    reg axis_cal_status_reg2;
+    reg axis_cal_status_reg3;
     always @(posedge clk or negedge rst_n) begin
         if(!rst_n) begin
-            axis_cal_status_reg <= #0.1 1'b0;
+            axis_cal_status_reg  <= #0.1 1'b0;
             axis_cal_status_reg1 <= #0.1 1'b0;
+            axis_cal_status_reg2 <= #0.1 1'b0;
+            axis_cal_status_reg3 <= #0.1 1'b0;
         end
         else begin
-            axis_cal_status_reg <= #0.1 axis_cal_status;
+            axis_cal_status_reg  <= #0.1 axis_cal_status;
             axis_cal_status_reg1 <= #0.1 axis_cal_status_reg;
+            axis_cal_status_reg2 <= #0.1 axis_cal_status_reg1;
+            axis_cal_status_reg3 <= #0.1 axis_cal_status_reg2;
         end
     end
-    assign axis_cal_negedge = ~axis_cal_status & axis_cal_status_reg;  // 下降沿检测
+    assign axis_cal_negedge  = ~axis_cal_status & axis_cal_status_reg;
     assign axis_cal_negedge1 = ~axis_cal_status_reg & axis_cal_status_reg1;
+    assign axis_cal_negedge2 = ~axis_cal_status_reg1 & axis_cal_status_reg2;
+    assign axis_cal_negedge3 = ~axis_cal_status_reg2 & axis_cal_status_reg3;
 
     always @(posedge clk or negedge rst_n) begin
         if(!rst_n) begin
@@ -266,32 +278,49 @@ module resize_axis (
             y_delta <= #0.1 8'd0;
             pixel_cnt <= #0.1 16'd0;
             current_row_y <= #0.1 16'd1; //初始即需要缩放
-            y_bias <= #0.1 16'd0;
             next_bias_mul_r <= #0.1 16'd0;
             pre_bias <= #0.1 16'd0;
         end
         else begin
             if(axis_cal_negedge) begin
-                // Stage2 输出: axis_cal_status 下降沿触发, 精确一次
-                data_valid <= data_valid_int;
+                // Stage2 输出: x_delta/y_delta/current_row_y/pixel_cnt
                 x_delta <= #0.1 x_delta_sub;
                 y_delta <= #0.1 y_delta_next_r;
-                y_bias <= #0.1 y_bias_next_r;
                 current_row_y <= #0.1 current_row_y_next_r;
                 pixel_cnt <= #0.1 (pixel_cnt_next_r == crop_size) ? 16'b0 : pixel_cnt_next_r;
-                next_bias_mul_r <= #0.1 next_bias_mul_comb;
+                data_valid <= #0.1 data_valid;
+                next_bias_mul_r <= #0.1 next_bias_mul_r;
                 pre_bias <= #0.1 pre_bias;
             end
             else if(axis_cal_negedge1) begin
-                // 更新 pre_bias (使用上一周期锁存的 next_bias_mul_r)
-                pre_bias <= #0.1 pre_bias_next;
+                // data_valid 从已寄存的 ratioed_x_full_r 计算 (切断 DSP→比较器长路径)
+                data_valid <= #0.1 data_valid_int;
+                x_delta <= #0.1 x_delta;
+                y_delta <= #0.1 y_delta;
+                pixel_cnt <= #0.1 pixel_cnt;
+                current_row_y <= #0.1 current_row_y;
                 next_bias_mul_r <= #0.1 next_bias_mul_r;
+                pre_bias <= #0.1 pre_bias;
+            end
+            else if(axis_cal_negedge2) begin
+                // 锁存 next_bias_mul (使用已寄存的 data_valid)
+                next_bias_mul_r <= #0.1 next_bias_mul_comb;
                 data_valid <= #0.1 data_valid;
                 x_delta <= #0.1 x_delta;
                 y_delta <= #0.1 y_delta;
                 pixel_cnt <= #0.1 pixel_cnt;
                 current_row_y <= #0.1 current_row_y;
-                y_bias <= #0.1 y_bias;
+                pre_bias <= #0.1 pre_bias;
+            end
+            else if(axis_cal_negedge3) begin
+                // 更新 pre_bias (使用上一周期锁存的 next_bias_mul_r)
+                pre_bias <= #0.1 pre_bias_next;
+                data_valid <= #0.1 data_valid;
+                x_delta <= #0.1 x_delta;
+                y_delta <= #0.1 y_delta;
+                pixel_cnt <= #0.1 pixel_cnt;
+                current_row_y <= #0.1 current_row_y;
+                next_bias_mul_r <= #0.1 next_bias_mul_r;
             end
             else begin
                 data_valid <= #0.1 data_valid;
@@ -299,7 +328,6 @@ module resize_axis (
                 y_delta <= #0.1 y_delta;
                 current_row_y <= #0.1 current_row_y;
                 pixel_cnt <= #0.1 pixel_cnt;
-                y_bias <= #0.1 y_bias;
                 pre_bias <= #0.1 pre_bias;
                 next_bias_mul_r <= #0.1 next_bias_mul_r;
             end
@@ -311,9 +339,11 @@ module resize_axis (
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             axis_done_r <= #0.1 1'b0;
+            y_bias      <= #0.1 16'd0;
         end
         else if (axis_cal_status) begin
             axis_done_r <= #0.1 1'b1;
+            y_bias      <= #0.1 y_bias_next_r;  // 提前1拍, 消除gen_status竞争
         end
         else begin
             axis_done_r <= #0.1 1'b0;

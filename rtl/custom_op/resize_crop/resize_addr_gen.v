@@ -51,6 +51,13 @@ module resize_addr_gen(
     reg [31:0] rbase_rs_reg;
     reg [31:0] wbase_rs_reg;
     reg        pipe_valid;
+    reg        pipe_valid_2;
+    reg [16:0] y_bias_sum_r;
+    reg [16:0] y_bias_sum_p1_r;
+    reg [31:0] y_bias_x_rwidth_r;
+    reg [31:0] y_bias_p1_x_rwidth_r;
+    reg [15:0] total_src_blocks_r;
+    reg [15:0] rs_num_r;
 
     // ============ 连线声明 ============
     wire       rd_pos;
@@ -78,19 +85,41 @@ module resize_addr_gen(
     wire [15:0] total_src_blocks    = wheight_rs * src_blocks_per_row;
 
     assign rs_num    = wheight_rs * dst_blocks_per_row;
-    assign src_done  = (total_rd_cnt >= total_src_blocks);
+    assign src_done  = (total_rd_cnt >= total_src_blocks_r);
+
+    // 寄存常量乘积, 消除 DSP→比较器 的长组合路径
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            total_src_blocks_r <= #0.1 16'd0;
+            rs_num_r           <= #0.1 16'd0;
+        end
+        else begin
+            total_src_blocks_r <= #0.1 total_src_blocks;
+            rs_num_r           <= #0.1 rs_num;
+        end
+    end
 
     // ============ 地址计算 (组合逻辑) ============
-    assign y_bias_x_rwidth    = (y_bias + crop_off_y) * (rwidth_rs << 2);
-    assign y_bias_p1_x_rwidth = (y_bias + crop_off_y + 16'd1) * (rwidth_rs << 2);
+    // 用位拼接替代 << 和 * 常数, 避免综合工具误推 DSP
+    wire [17:0] rwidth_bytes  = {rwidth_rs,  2'b0};  // rwidth_rs * 4
+    wire [17:0] crop_off_x_b  = {crop_off_x, 2'b0};  // crop_off_x * 4
+
+    // 加法独立 (Stage2 锁存) — 路径: reg→adder→reg
+    wire [16:0] y_bias_sum    = y_bias + crop_off_y;
+    wire [16:0] y_bias_sum_p1 = y_bias + crop_off_y + 16'd1;
+
+    // DSP 乘法 (Stage3 锁存) — 路径: reg(加法结果)→DSP→reg
+    assign y_bias_x_rwidth    = y_bias_sum_r * rwidth_bytes;
+    assign y_bias_p1_x_rwidth = y_bias_sum_p1_r * rwidth_bytes;
 
     assign addr_rd_cnt      = (gen_status && row_changed) ? 16'd0 : rs_rd_cnt;
-    assign arbase_offset_c  = crop_off_x * 4 + (addr_rd_cnt << RS_SHIFT);
+    assign arbase_offset_c  = crop_off_x_b + (addr_rd_cnt << RS_SHIFT);
 
-    assign arbase_rs_gen_c  = rbase_rs_reg + y_bias_x_rwidth + arbase_offset_c;
-    assign arbase_rs_gen_2_c = rbase_rs_reg + y_bias_p1_x_rwidth + arbase_offset_c;
-    assign awbase_rs_gen_c  = wbase_rs_reg + (rs_wr_cnt << RS_SHIFT);
-    assign awbase_comb      = awbase_rs_gen_c;
+    // 地址累加 (Stage4 锁存) — 路径: reg+reg+comb→reg
+    assign arbase_rs_gen_c   = rbase_rs_reg + y_bias_x_rwidth_r + arbase_offset_c;
+    assign arbase_rs_gen_2_c = rbase_rs_reg + y_bias_p1_x_rwidth_r + arbase_offset_c;
+    assign awbase_rs_gen_c   = wbase_rs_reg + (rs_wr_cnt << RS_SHIFT);
+    assign awbase_comb       = awbase_rs_gen_c;
 
     // ============ trans_status 延迟 ============
     always @(posedge clk or negedge rst_n) begin
@@ -135,16 +164,21 @@ module resize_addr_gen(
             rs_wr_cnt <= #0.1 16'd0;
     end
 
-    // ============ 第一级流水线 (gen_status → latch) ============
+    // ============ 第一级流水线 (gen_status → rbase/wbase + y_bias加法) ============
+    // y_bias 已在 AXIS_CAL 内提前更新, 此时稳定
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             rbase_rs_reg <= #0.1 32'd0;
             wbase_rs_reg <= #0.1 32'd0;
+            y_bias_sum_r    <= #0.1 17'd0;
+            y_bias_sum_p1_r <= #0.1 17'd0;
             pipe_valid   <= #0.1 1'b0;
         end
         else if (gen_status) begin
             rbase_rs_reg <= #0.1 rbase_rs;
             wbase_rs_reg <= #0.1 wbase_rs;
+            y_bias_sum_r    <= #0.1 y_bias_sum;
+            y_bias_sum_p1_r <= #0.1 y_bias_sum_p1;
             pipe_valid   <= #0.1 1'b1;
         end
         else begin
@@ -152,7 +186,23 @@ module resize_addr_gen(
         end
     end
 
-    // ============ 第二级流水线 (pipe_valid → output) ============
+    // ============ 第二级流水线 (pipe_valid → latch DSP 乘积) ============
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            y_bias_x_rwidth_r    <= #0.1 32'd0;
+            y_bias_p1_x_rwidth_r <= #0.1 32'd0;
+            pipe_valid_2         <= #0.1 1'b0;
+        end
+        else begin
+            pipe_valid_2 <= #0.1 pipe_valid;
+            if (pipe_valid) begin
+                y_bias_x_rwidth_r    <= #0.1 y_bias_x_rwidth;
+                y_bias_p1_x_rwidth_r <= #0.1 y_bias_p1_x_rwidth;
+            end
+        end
+    end
+
+    // ============ 第三级流水线 (pipe_valid_2 → output) ============
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             rs_addr_gen_valid <= #0.1 1'b0;
@@ -162,7 +212,7 @@ module resize_addr_gen(
             awbase_rs_gen     <= #0.1 32'd0;
             awsize_rs_gen     <= #0.1 16'd0;
         end
-        else if (pipe_valid) begin
+        else if (pipe_valid_2) begin
             rs_addr_gen_valid <= #0.1 1'b1;
             arbase_rs_gen     <= #0.1 arbase_rs_gen_c;
             arbase_rs_gen_2   <= #0.1 arbase_rs_gen_2_c;
@@ -183,7 +233,7 @@ module resize_addr_gen(
         end
         else if (gen_status) begin
             rs_first_line <= #0.1 (total_rd_cnt == 16'd0);
-            rs_last_line  <= #0.1 (rs_wr_cnt == rs_num - 1);
+            rs_last_line  <= #0.1 (rs_wr_cnt == rs_num_r - 1);
         end
         else if (comp_done_rs) begin
             rs_first_line <= #0.1 1'b0;
