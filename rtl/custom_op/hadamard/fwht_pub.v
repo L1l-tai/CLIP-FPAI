@@ -88,8 +88,15 @@ module fwht_pub #(
     assign exp_b  = cal_percision ? op_b[FP16_MW +: EXP_W] : 5'd0;
 
     // INT16: 15-bit有符号 → 绝对值 → 截断到 MAN_W (13-bit)
-    wire [14:0] int16_abs_a = sign_a ? (~op_a[14:0] + 1'b1) : op_a[14:0];
-    wire [14:0] int16_abs_b = sign_b ? (~op_b[14:0] + 1'b1) : op_b[14:0];
+    // FP16 时门控为常数 0, 常量传播优化掉加法器
+    wire [14:0] int16_abs_a_val;
+    wire [14:0] int16_abs_b_val;
+    wire [14:0] int16_abs_a;
+    wire [14:0] int16_abs_b;
+    assign int16_abs_a_val = sign_a ? (~op_a[14:0] + 1'b1) : op_a[14:0];
+    assign int16_abs_b_val = sign_b ? (~op_b[14:0] + 1'b1) : op_b[14:0];
+    assign int16_abs_a = cal_percision ? 15'd0 : int16_abs_a_val;
+    assign int16_abs_b = cal_percision ? 15'd0 : int16_abs_b_val;
     assign man_a_int16_abs = int16_abs_a[MAN_W-1:0];
     assign man_b_int16_abs = int16_abs_b[MAN_W-1:0];
 
@@ -158,26 +165,29 @@ module fwht_pub #(
     // =========================================================================
 
     // Two-stage Priority Encoder: 检测 s2_diff_sub[11:0] 前导1位置
+    // INT16 时输入门控为 0, 常量传播优化掉 LOD 逻辑
+    wire [MAN_W+1:0] s2_diff_sub_norm;
     wire [2:0] group_msb_5;
+    assign s2_diff_sub_norm = cal_percision ? s2_diff_sub : 0;
     wire [2:0] group_msb_0;
     wire       msb_in_upper;
     wire [3:0] sub_leading_pos;
 
     assign group_msb_5 =
-        (s2_diff_sub[11]) ? 3'd5 :
-        (s2_diff_sub[10]) ? 3'd4 :
-        (s2_diff_sub[9])  ? 3'd3 :
-        (s2_diff_sub[8])  ? 3'd2 :
-        (s2_diff_sub[7])  ? 3'd1 :
-        (s2_diff_sub[6])  ? 3'd0 : 3'd6;
+        (s2_diff_sub_norm[11]) ? 3'd5 :
+        (s2_diff_sub_norm[10]) ? 3'd4 :
+        (s2_diff_sub_norm[9])  ? 3'd3 :
+        (s2_diff_sub_norm[8])  ? 3'd2 :
+        (s2_diff_sub_norm[7])  ? 3'd1 :
+        (s2_diff_sub_norm[6])  ? 3'd0 : 3'd6;
 
     assign group_msb_0 =
-        (s2_diff_sub[5])  ? 3'd5 :
-        (s2_diff_sub[4])  ? 3'd4 :
-        (s2_diff_sub[3])  ? 3'd3 :
-        (s2_diff_sub[2])  ? 3'd2 :
-        (s2_diff_sub[1])  ? 3'd1 :
-        (s2_diff_sub[0])  ? 3'd0 : 3'd0;
+        (s2_diff_sub_norm[5])  ? 3'd5 :
+        (s2_diff_sub_norm[4])  ? 3'd4 :
+        (s2_diff_sub_norm[3])  ? 3'd3 :
+        (s2_diff_sub_norm[2])  ? 3'd2 :
+        (s2_diff_sub_norm[1])  ? 3'd1 :
+        (s2_diff_sub_norm[0])  ? 3'd0 : 3'd0;
 
     assign msb_in_upper = (group_msb_5 != 3'd6);
     assign sub_leading_pos = msb_in_upper ? (group_msb_5 + 3'd6) : group_msb_0;
@@ -187,13 +197,14 @@ module fwht_pub #(
     //   s2_sum_add[MAN_W+1:1] 是去 guard 后的 14-bit 尾数
     //   FP16 输出期望隐式 1 在 bit[10], 若前导 1 在更高位则需右移
     // =========================================================================
+    // INT16 时门控: add_needs_shift=0, add_shift_amt=0
     wire [1:0] add_shift_amt;
     wire       add_needs_shift;
-    assign add_needs_shift = |s2_sum_add[MAN_W+1:FP16_MW+2];  // bits [14:12]
-    assign add_shift_amt   = s2_sum_add[MAN_W+1] ? 2'd3 :      // bit 14 → shift 3
-                             s2_sum_add[MAN_W  ] ? 2'd2 :      // bit 13 → shift 2
-                             s2_sum_add[FP16_MW+2] ? 2'd1 :    // bit 12 → shift 1
-                             2'd0;
+    assign add_needs_shift = cal_percision && |s2_sum_add[MAN_W+1:FP16_MW+2];
+    assign add_shift_amt   = cal_percision ?
+                             (s2_sum_add[MAN_W+1] ? 2'd3 :
+                              s2_sum_add[MAN_W  ] ? 2'd2 :
+                              s2_sum_add[FP16_MW+2] ? 2'd1 : 2'd0) : 2'd0;
 
     // 归一化移位: 用 FP16_MW 对准 FP16 尾数位宽
     wire [MAN_W+1:0] sub_shifted;
@@ -201,8 +212,15 @@ module fwht_pub #(
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            s3_valid <= 1'b0;
-        end else begin
+            s3_valid          <= 1'b0;
+            s3_man_add_norm   <= {(MAN_W+1){1'b0}};
+            s3_exp_add_norm   <= {(EXP_W+1){1'b0}};
+            s3_sign_add_norm  <= 1'b0;
+            s3_man_sub_norm   <= {(MAN_W+1){1'b0}};
+            s3_exp_sub_norm   <= {(EXP_W+1){1'b0}};
+            s3_sign_sub_norm  <= 1'b0;
+        end else if (cal_percision) begin
+            // FP16: 完整归一化逻辑
             s3_valid <= s2_valid;
 
             // ADD Path: 前导 1 检测 + 可变右移 (对齐到 FP16_MW=10)
@@ -217,14 +235,23 @@ module fwht_pub #(
 
             // SUB Path: 前导1检测 + 可变左移
             if (s2_diff_sub == 0) begin
-                s3_man_sub_norm <= 0;
-                s3_exp_sub_norm <= 0;
+                s3_man_sub_norm  <= {(MAN_W+1){1'b0}};
+                s3_exp_sub_norm  <= {(EXP_W+1){1'b0}};
                 s3_sign_sub_norm <= 1'b0;
             end else begin
-                s3_man_sub_norm <= sub_shifted[MAN_W+1:1];
-                s3_exp_sub_norm <= s2_exp_sub - (FP16_MW + 1 - sub_leading_pos);
+                s3_man_sub_norm  <= sub_shifted[MAN_W+1:1];
+                s3_exp_sub_norm  <= s2_exp_sub - (FP16_MW + 1 - sub_leading_pos);
                 s3_sign_sub_norm <= s2_sign_sub;
             end
+        end else begin
+            // INT16: 寄存器恒为 0, 综合工具常量传播优化
+            s3_valid          <= s2_valid;
+            s3_man_add_norm   <= {(MAN_W+1){1'b0}};
+            s3_exp_add_norm   <= {(EXP_W+1){1'b0}};
+            s3_sign_add_norm  <= 1'b0;
+            s3_man_sub_norm   <= {(MAN_W+1){1'b0}};
+            s3_exp_sub_norm   <= {(EXP_W+1){1'b0}};
+            s3_sign_sub_norm  <= 1'b0;
         end
     end
 
@@ -241,11 +268,14 @@ module fwht_pub #(
     // INT16 merge: 从宽幅值重建 16-bit 2补码
     //   ADD: s2_sum_add[MAN_W+1:1] = 14-bit 幅值 → {2'b0, 14-bit} → 符号决定2补码
     //   SUB: s2_diff_sub[MAN_W:1]   = 13-bit 幅值 → {3'b0, 13-bit} → 符号决定2补码
-    wire [15:0] int16_add_pos = {2'b0, s2_sum_add[MAN_W+1:1]};
-    wire [15:0] int16_add_2s  = s2_sign_add ? (~int16_add_pos + 16'd1) : int16_add_pos;
-
-    wire [15:0] int16_sub_pos = {3'b0, s2_diff_sub[MAN_W:1]};
-    wire [15:0] int16_sub_2s  = s2_sign_sub ? (~int16_sub_pos + 16'd1) : int16_sub_pos;
+    wire [15:0] int16_add_pos;
+    wire [15:0] int16_add_2s;
+    wire [15:0] int16_sub_pos;
+    wire [15:0] int16_sub_2s;
+    assign int16_add_pos = {2'b0, s2_sum_add[MAN_W+1:1]};
+    assign int16_add_2s  = s2_sign_add ? (~int16_add_pos + 16'd1) : int16_add_pos;
+    assign int16_sub_pos = {3'b0, s2_diff_sub[MAN_W:1]};
+    assign int16_sub_2s  = s2_sign_sub ? (~int16_sub_pos + 16'd1) : int16_sub_pos;
 
     wire [FP_W-1:0] s3_merge_add;
     wire [FP_W-1:0] s3_merge_sub;

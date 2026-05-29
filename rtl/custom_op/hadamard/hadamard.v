@@ -172,13 +172,7 @@ wire                 s3_valid_pos;
 wire                 s4_valid_pos;
 wire                 s5_valid_pos;
 wire                 s6_valid_pos;
-reg                  s0_valid_pos_r;
-reg                  s1_valid_pos_r;
-reg                  s2_valid_pos_r;
-reg                  s3_valid_pos_r;
-reg                  s4_valid_pos_r;
-reg                  s5_valid_pos_r;
-reg                  s6_valid_pos_r;
+reg                  s6_valid_pos_r;  // 仅保留 stage6 用于 w_reg_valid_pos
 
 wire [31:0]         s_valid_out;
 wire                s_valid_out_all;
@@ -285,12 +279,6 @@ always @(posedge clk or negedge rst_n) begin
         s4_valid_r <= 1'b0;
         s5_valid_r <= 1'b0;
         s6_valid_r <= 1'b0;
-        s0_valid_pos_r <= 1'b0;
-        s1_valid_pos_r <= 1'b0;
-        s2_valid_pos_r <= 1'b0;
-        s3_valid_pos_r <= 1'b0;
-        s4_valid_pos_r <= 1'b0;
-        s5_valid_pos_r <= 1'b0;
         s6_valid_pos_r <= 1'b0;
     end
     else begin
@@ -301,12 +289,6 @@ always @(posedge clk or negedge rst_n) begin
         s4_valid_r <= s4_valid;
         s5_valid_r <= s5_valid;
         s6_valid_r <= s6_valid;
-        s0_valid_pos_r <= s0_valid_pos;
-        s1_valid_pos_r <= s1_valid_pos;
-        s2_valid_pos_r <= s2_valid_pos;
-        s3_valid_pos_r <= s3_valid_pos;
-        s4_valid_pos_r <= s4_valid_pos;
-        s5_valid_pos_r <= s5_valid_pos;
         s6_valid_pos_r <= s6_valid_pos;
     end
 end
@@ -360,8 +342,8 @@ generate
                       s1_valid_r ? stage1[HI1] :
                       s0_valid_r ? stage0[HI0] : 16'd0;
 
-        assign s_valid_in = s0_valid_pos_r | s1_valid_pos_r | s2_valid_pos_r | 
-                            s3_valid_pos_r | s4_valid_pos_r | s5_valid_pos_r ;
+        assign s_valid_in = s0_valid_pos | s1_valid_pos | s2_valid_pos |
+                            s3_valid_pos | s4_valid_pos | s5_valid_pos ;
 
 
         always @(posedge clk or negedge rst_n) begin
