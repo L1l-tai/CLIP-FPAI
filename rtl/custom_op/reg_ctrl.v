@@ -110,7 +110,7 @@ module reg_ctrl(
     localparam RFU_RADDR8        = 16'h29;
     localparam RFU_RADDR9        = 16'h2a;
 
-    localparam GATHER_VERSION       = 32'h20260412; 
+    localparam GATHER_VERSION       = 32'h20260611;
 
     localparam HD_COMP_START_ADDR   = 16'h31;
     localparam HD_RBASE_ADDR  = 16'h32;
@@ -118,7 +118,7 @@ module reg_ctrl(
     localparam HD_WRSIZE_ADDR  = 16'h34;
     localparam HD_COMP_DONE_ADDR = 16'h40;
 
-    localparam HD_VERSION       = 32'h20260421;
+    localparam HD_VERSION       = 32'h20260611;
 
     localparam RS_COMP_START_ADDR   = 16'h41;
     localparam RS_RBASE_ADDR        = 16'h42;
@@ -127,7 +127,7 @@ module reg_ctrl(
     localparam RS_WSIZE_ADDR        = 16'h45;
     localparam RS_COMP_DONE_ADDR    = 16'h50;
 
-    localparam RS_VERSION          = 32'h20260427;
+    localparam RS_VERSION          = 32'h20260611;
 
 
     wire              ra_awevent      ;

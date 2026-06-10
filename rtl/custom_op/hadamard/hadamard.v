@@ -174,25 +174,20 @@ wire                 s5_valid_pos;
 wire                 s6_valid_pos;
 reg                  s6_valid_pos_r;  // 仅保留 stage6 用于 w_reg_valid_pos
 
-wire [31:0]         s_valid_out;
+wire [15:0]         s_valid_out;
 wire                s_valid_out_all;
 reg                 s_valid_out_r;
 reg [2:0]           stage_cnt;
+wire sX_start = s0_valid_pos | s1_valid_pos | s2_valid_pos |
+                s3_valid_pos | s4_valid_pos | s5_valid_pos;
+reg  sX_start_r1, sX_start_r2;
+wire s_valid_in;
+assign s_valid_in = sX_start_r1 | sX_start_r2;  // sX_start延迟1拍, 连续两拍触发 PUB
 
 
-reg                w_reg_valid_r;
 reg                result_valid;
 wire               w_reg_valid;
-wire               w_reg_valid_pos; 
-
-always @(posedge clk or negedge rst_n) begin
-    if(!rst_n) begin
-        w_reg_valid_r <= #0.1 1'b0;
-    end
-    else begin
-        w_reg_valid_r <= #0.1 w_reg_valid;
-    end
-end
+wire               w_reg_valid_pos;
 
 always @(posedge clk or negedge rst_n) begin
     if(!rst_n) begin
@@ -261,13 +256,16 @@ always @(posedge clk or negedge rst_n) begin
         stage_cnt <= 3'd0;
     end
     else begin
-        if(gen_status) begin
+        if(gen_status)
             stage_cnt <= 3'b0;
-        end
-        else if(s_valid_out_all & ~s_valid_out_r) begin
-            stage_cnt <= stage_cnt + 3'b1; //最高到6
-        end
+        else if(s_valid_out_all && s_valid_out_r)
+            stage_cnt <= stage_cnt + 3'b1;  // g1捕获时推进
     end
+end
+
+always @(posedge clk or negedge rst_n) begin
+    if(!rst_n) begin sX_start_r1 <= 1'b0; sX_start_r2 <= 1'b0; end
+    else       begin sX_start_r1 <= sX_start; sX_start_r2 <= sX_start_r1; end
 end
 
 always @(posedge clk or negedge rst_n) begin
@@ -302,142 +300,229 @@ assign s5_valid_pos = s5_valid & ~s5_valid_r;
 assign s6_valid_pos = s6_valid & ~s6_valid_r;
 
 // ============================================================
-// Stage 0-5: 32 butterflies per stage, captured on valid_out rising edge
+// 16 PUB 交织: group_sel 选 g0/g1 输入, valid_cyc 选 g0/g1 输出捕获
 // ============================================================
 generate
-    for (i = 0; i < 32; i = i + 1) begin
-        localparam LO0 = i * 2;
-        localparam HI0 = LO0 + 1;
-        localparam LO1 = (i % 2) + (i / 2) * 4;
-        localparam HI1 = LO1 + 2;
-        localparam LO2 = (i % 4) + (i / 4) * 8;
-        localparam HI2 = LO2 + 4;
-        localparam LO3 = (i % 8) + (i / 8) * 16;
-        localparam HI3 = LO3 + 8;
-        localparam LO4 = (i % 16) + (i / 16) * 32;
-        localparam HI4 = LO4 + 16;
-        localparam LO5 = (i % 32) + (i / 32) * 64;
-        localparam HI5 = LO5 + 32;
+    for (i = 0; i < 16; i = i + 1) begin
+        localparam I0 = i;
+        localparam I1 = i + 16;
+        localparam LO0_g0 = I0 * 2;
+        localparam HI0_g0 = LO0_g0 + 1;
+        localparam LO0_g1 = I1 * 2;
+        localparam HI0_g1 = LO0_g1 + 1;
+        localparam LO1_g0 = (I0%2)+(I0/2)*4;
+        localparam HI1_g0 = LO1_g0 + 2;
+        localparam LO1_g1 = (I1%2)+(I1/2)*4;
+        localparam HI1_g1 = LO1_g1 + 2;
+        localparam LO2_g0 = (I0%4)+(I0/4)*8;
+        localparam HI2_g0 = LO2_g0 + 4;
+        localparam LO2_g1 = (I1%4)+(I1/4)*8;
+        localparam HI2_g1 = LO2_g1 + 4;
+        localparam LO3_g0 = (I0%8)+(I0/8)*16;
+        localparam HI3_g0 = LO3_g0 + 8;
+        localparam LO3_g1 = (I1%8)+(I1/8)*16;
+        localparam HI3_g1 = LO3_g1 + 8;
+        localparam LO4_g0 = (I0%16)+(I0/16)*32;
+        localparam HI4_g0 = LO4_g0 + 16;
+        localparam LO4_g1 = (I1%16)+(I1/16)*32;
+        localparam HI4_g1 = LO4_g1 + 16;
+        localparam LO5_g0 = (I0%32)+(I0/32)*64;
+        localparam HI5_g0 = LO5_g0 + 32;
+        localparam LO5_g1 = (I1%32)+(I1/32)*64;
+        localparam HI5_g1 = LO5_g1 + 32;
 
-        wire [15:0] op_a;
-        wire [15:0] op_b;
-        wire        s_valid_in;
+        wire [15:0] op_a_g0, op_a_g1;
+        wire [15:0] op_b_g0, op_b_g1;
+        wire [15:0] op_a, op_b;
         wire [15:0] result_add;
         wire [15:0] result_sub;
         reg  [15:0] op_a_r;
         reg  [15:0] op_b_r;
         reg  s_valid_in_r;
-        assign op_a = s5_valid_r ? stage5[LO5] :
-                      s4_valid_r ? stage4[LO4] :
-                      s3_valid_r ? stage3[LO3] :
-                      s2_valid_r ? stage2[LO2] :
-                      s1_valid_r ? stage1[LO1] :
-                      s0_valid_r ? stage0[LO0] : 16'd0;
 
-                      
-        assign op_b = s5_valid_r ? stage5[HI5] :
-                      s4_valid_r ? stage4[HI4] :
-                      s3_valid_r ? stage3[HI3] :
-                      s2_valid_r ? stage2[HI2] :
-                      s1_valid_r ? stage1[HI1] :
-                      s0_valid_r ? stage0[HI0] : 16'd0;
+        // 6:1 per group: stage_cnt 直接索引, 省一级 sX_valid_r 寄存器延迟
+        wire [3:0] sc = stage_cnt[2:0];
+        assign op_a_g0 = (sc == 3'd5) ? stage5[LO5_g0] :
+                         (sc == 3'd4) ? stage4[LO4_g0] :
+                         (sc == 3'd3) ? stage3[LO3_g0] :
+                         (sc == 3'd2) ? stage2[LO2_g0] :
+                         (sc == 3'd1) ? stage1[LO1_g0] : stage0[LO0_g0];
+        assign op_a_g1 = (sc == 3'd5) ? stage5[LO5_g1] :
+                         (sc == 3'd4) ? stage4[LO4_g1] :
+                         (sc == 3'd3) ? stage3[LO3_g1] :
+                         (sc == 3'd2) ? stage2[LO2_g1] :
+                         (sc == 3'd1) ? stage1[LO1_g1] : stage0[LO0_g1];
+        assign op_b_g0 = (sc == 3'd5) ? stage5[HI5_g0] :
+                         (sc == 3'd4) ? stage4[HI4_g0] :
+                         (sc == 3'd3) ? stage3[HI3_g0] :
+                         (sc == 3'd2) ? stage2[HI2_g0] :
+                         (sc == 3'd1) ? stage1[HI1_g0] : stage0[HI0_g0];
+        assign op_b_g1 = (sc == 3'd5) ? stage5[HI5_g1] :
+                         (sc == 3'd4) ? stage4[HI4_g1] :
+                         (sc == 3'd3) ? stage3[HI3_g1] :
+                         (sc == 3'd2) ? stage2[HI2_g1] :
+                         (sc == 3'd1) ? stage1[HI1_g1] : stage0[HI0_g1];
 
-        assign s_valid_in = s0_valid_pos | s1_valid_pos | s2_valid_pos |
-                            s3_valid_pos | s4_valid_pos | s5_valid_pos ;
-
+        // 6:1 mux 输出 → 寄存器 (切分长组合路径)
+        reg [15:0] op_a_g0_r, op_a_g1_r, op_b_g0_r, op_b_g1_r;
+        reg        s_valid_in_r1, s_valid_in_r2;
 
         always @(posedge clk or negedge rst_n) begin
-            if(!rst_n)begin
-                op_a_r <= 16'b0;
-                op_b_r <= 16'b0;
-                s_valid_in_r <= 1'b0;
-            end
-            else begin
-                op_a_r <= op_a;
-                op_b_r <= op_b;
-                s_valid_in_r <= s_valid_in; 
+            if(!rst_n) begin
+                op_a_g0_r <= 16'b0; op_a_g1_r <= 16'b0;
+                op_b_g0_r <= 16'b0; op_b_g1_r <= 16'b0;
+                s_valid_in_r1 <= 1'b0; s_valid_in_r2 <= 1'b0;
+                op_a_r <= 16'b0; op_b_r <= 16'b0; s_valid_in_r <= 1'b0;
+            end else if(gen_status) begin
+                s_valid_in_r1 <= 1'b0; s_valid_in_r <= 1'b0;
+            end else begin
+                // Stage1: 锁存6:1 mux输出
+                op_a_g0_r <= op_a_g0; op_a_g1_r <= op_a_g1;
+                op_b_g0_r <= op_b_g0; op_b_g1_r <= op_b_g1;
+                s_valid_in_r1 <= s_valid_in; s_valid_in_r2 <= s_valid_in_r1;
+                // Stage2: 2:1 mux (边沿检测对齐延迟1拍的数据)
+                op_a_r    <= (s_valid_in_r1 && !s_valid_in_r2) ? op_a_g0_r : op_a_g1_r;
+                op_b_r    <= (s_valid_in_r1 && !s_valid_in_r2) ? op_b_g0_r : op_b_g1_r;
+                s_valid_in_r <= s_valid_in_r1;
             end
         end
 
-        fwht_pub #(
-            .EXP_W(5),
-            .MAN_W(13),     // 13-bit覆盖FWHT最大幅值8128, FP16/INT16共享
-            .FP_W(16)
-        ) u_fwht_pub (
-            .clk            (clk),
-            .rst_n          (rst_n),
-            .cal_percision  (cal_percision),
-            .op_a           (op_a_r),
-            .op_b           (op_b_r),
-            .valid_in       (s_valid_in_r),
-            .result_add     (result_add),
-            .result_sub     (result_sub),
-            .valid_out      (s_valid_out[i])
+        fwht_pub #(.EXP_W(5), .MAN_W(13), .FP_W(16)) u_fwht_pub (
+            .clk(clk), .rst_n(rst_n), .cal_percision(cal_percision),
+            .op_a(op_a_r), .op_b(op_b_r), .valid_in(s_valid_in_r),
+            .result_add(result_add), .result_sub(result_sub),
+            .valid_out(s_valid_out[i])
         );
 
-        // Stage 1 capture on s1_valid rising edge
+        // Stage 1 capture (s_valid_out_all && stage_cnt==0)
         always @(posedge clk or negedge rst_n) begin
             if (!rst_n) begin
-                stage1[LO0] <= 16'b0;
-                stage1[HI0] <= 16'b0;
-            end else if (s1_valid_pos) begin
-                stage1[LO0] <= result_add;
-                stage1[HI0] <= result_sub;
+                stage1[LO0_g0] <= 16'b0;
+                stage1[HI0_g0] <= 16'b0;
+                stage1[LO0_g1] <= 16'b0;
+                stage1[HI0_g1] <= 16'b0;
+            end else if (s_valid_out_all && stage_cnt == 3'd0) begin
+                if (!s_valid_out_r) begin
+                    stage1[LO0_g0] <= result_add;
+                    stage1[HI0_g0] <= result_sub;
+                    stage1[LO0_g1] <= 16'b0;
+                    stage1[HI0_g1] <= 16'b0;
+                end else begin
+                    stage1[LO0_g0] <= stage1[LO0_g0];
+                    stage1[HI0_g0] <= stage1[HI0_g0];
+                    stage1[LO0_g1] <= result_add;
+                    stage1[HI0_g1] <= result_sub;
+                end
             end
         end
 
-        // Stage 2 capture on s2_valid rising edge
+        // Stage 2 capture (s_valid_out_all && stage_cnt==1)
         always @(posedge clk or negedge rst_n) begin
             if (!rst_n) begin
-                stage2[LO1] <= 16'b0;
-                stage2[HI1] <= 16'b0;
-            end else if (s2_valid_pos) begin
-                stage2[LO1] <= result_add;
-                stage2[HI1] <= result_sub;
+                stage2[LO1_g0] <= 16'b0;
+                stage2[HI1_g0] <= 16'b0;
+                stage2[LO1_g1] <= 16'b0;
+                stage2[HI1_g1] <= 16'b0;
+            end else if (s_valid_out_all && stage_cnt == 3'd1) begin
+                if (!s_valid_out_r) begin
+                    stage2[LO1_g0] <= result_add;
+                    stage2[HI1_g0] <= result_sub;
+                    stage2[LO1_g1] <= 16'b0;
+                    stage2[HI1_g1] <= 16'b0;
+                end else begin
+                    stage2[LO1_g0] <= stage2[LO1_g0];
+                    stage2[HI1_g0] <= stage2[HI1_g0];
+                    stage2[LO1_g1] <= result_add;
+                    stage2[HI1_g1] <= result_sub;
+                end
             end
         end
 
-        // Stage 3 capture on s3_valid rising edge
+        // Stage 3 capture (s_valid_out_all && stage_cnt==2)
         always @(posedge clk or negedge rst_n) begin
             if (!rst_n) begin
-                stage3[LO2] <= 16'b0;
-                stage3[HI2] <= 16'b0;
-            end else if (s3_valid_pos) begin
-                stage3[LO2] <= result_add;
-                stage3[HI2] <= result_sub;
+                stage3[LO2_g0] <= 16'b0;
+                stage3[HI2_g0] <= 16'b0;
+                stage3[LO2_g1] <= 16'b0;
+                stage3[HI2_g1] <= 16'b0;
+            end else if (s_valid_out_all && stage_cnt == 3'd2) begin
+                if (!s_valid_out_r) begin
+                    stage3[LO2_g0] <= result_add;
+                    stage3[HI2_g0] <= result_sub;
+                    stage3[LO2_g1] <= 16'b0;
+                    stage3[HI2_g1] <= 16'b0;
+                end else begin
+                    stage3[LO2_g0] <= stage3[LO2_g0];
+                    stage3[HI2_g0] <= stage3[HI2_g0];
+                    stage3[LO2_g1] <= result_add;
+                    stage3[HI2_g1] <= result_sub;
+                end
             end
         end
 
-        // Stage 4 capture on s4_valid rising edge
+        // Stage 4 capture (s_valid_out_all && stage_cnt==3)
         always @(posedge clk or negedge rst_n) begin
             if (!rst_n) begin
-                stage4[LO3] <= 16'b0;
-                stage4[HI3] <= 16'b0;
-            end else if (s4_valid_pos) begin
-                stage4[LO3] <= result_add;
-                stage4[HI3] <= result_sub;
+                stage4[LO3_g0] <= 16'b0;
+                stage4[HI3_g0] <= 16'b0;
+                stage4[LO3_g1] <= 16'b0;
+                stage4[HI3_g1] <= 16'b0;
+            end else if (s_valid_out_all && stage_cnt == 3'd3) begin
+                if (!s_valid_out_r) begin
+                    stage4[LO3_g0] <= result_add;
+                    stage4[HI3_g0] <= result_sub;
+                    stage4[LO3_g1] <= 16'b0;
+                    stage4[HI3_g1] <= 16'b0;
+                end else begin
+                    stage4[LO3_g0] <= stage4[LO3_g0];
+                    stage4[HI3_g0] <= stage4[HI3_g0];
+                    stage4[LO3_g1] <= result_add;
+                    stage4[HI3_g1] <= result_sub;
+                end
             end
         end
 
-        // Stage 5 capture on s5_valid rising edge
+        // Stage 5 capture (s_valid_out_all && stage_cnt==4)
         always @(posedge clk or negedge rst_n) begin
             if (!rst_n) begin
-                stage5[LO4] <= 16'b0;
-                stage5[HI4] <= 16'b0;
-            end else if (s5_valid_pos) begin
-                stage5[LO4] <= result_add;
-                stage5[HI4] <= result_sub;
+                stage5[LO4_g0] <= 16'b0;
+                stage5[HI4_g0] <= 16'b0;
+                stage5[LO4_g1] <= 16'b0;
+                stage5[HI4_g1] <= 16'b0;
+            end else if (s_valid_out_all && stage_cnt == 3'd4) begin
+                if (!s_valid_out_r) begin
+                    stage5[LO4_g0] <= result_add;
+                    stage5[HI4_g0] <= result_sub;
+                    stage5[LO4_g1] <= 16'b0;
+                    stage5[HI4_g1] <= 16'b0;
+                end else begin
+                    stage5[LO4_g0] <= stage5[LO4_g0];
+                    stage5[HI4_g0] <= stage5[HI4_g0];
+                    stage5[LO4_g1] <= result_add;
+                    stage5[HI4_g1] <= result_sub;
+                end
             end
         end
 
-        // Stage 6 capture on s6_valid rising edge
+        // Stage 6 capture (s_valid_out_all && stage_cnt==5)
         always @(posedge clk or negedge rst_n) begin
             if (!rst_n) begin
-                stage6[LO5] <= 16'b0;
-                stage6[HI5] <= 16'b0;
-            end else if (s6_valid_pos) begin
-                stage6[LO5] <= result_add;
-                stage6[HI5] <= result_sub;
+                stage6[LO5_g0] <= 16'b0;
+                stage6[HI5_g0] <= 16'b0;
+                stage6[LO5_g1] <= 16'b0;
+                stage6[HI5_g1] <= 16'b0;
+            end else if (s_valid_out_all && stage_cnt == 3'd5) begin
+                if (!s_valid_out_r) begin
+                    stage6[LO5_g0] <= result_add;
+                    stage6[HI5_g0] <= result_sub;
+                    stage6[LO5_g1] <= 16'b0;
+                    stage6[HI5_g1] <= 16'b0;
+                end else begin
+                    stage6[LO5_g0] <= stage6[LO5_g0];
+                    stage6[HI5_g0] <= stage6[HI5_g0];
+                    stage6[LO5_g1] <= result_add;
+                    stage6[HI5_g1] <= result_sub;
+                end
             end
         end
     end

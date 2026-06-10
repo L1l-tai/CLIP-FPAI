@@ -39,7 +39,6 @@ module resize_axis (
 
 
     reg [15:0] width_ratio_less;     // Q1.3.12格式, w/r < 1
-    reg [15:0] height_ratio_less;   // Q1.3.12格式, h/r < 1
     reg [15:0] width_ratio_greater; // Q1.7.8格式, r/w > 1
     reg [15:0] height_ratio_greater;// Q1.7.8格式, r/h > 1
     reg        axis_pre_cal_done_r;
@@ -68,21 +67,18 @@ module resize_axis (
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             width_ratio_less <= #0.1 16'd0;
-            height_ratio_less <= #0.1 16'd0;
             width_ratio_greater <= #0.1 16'd0;
             height_ratio_greater <= #0.1 16'd0;
             axis_pre_cal_done_r <= #0.1 1'b0;
         end
         else if (axis_pre_cal) begin
             width_ratio_less <= #0.1 resize_ratio_less;
-            height_ratio_less <= #0.1 resize_ratio_less;
             width_ratio_greater <= #0.1 resize_ratio_greater;
             height_ratio_greater <= #0.1 resize_ratio_greater;
             axis_pre_cal_done_r <= #0.1 1'b1;
         end
         else begin
             width_ratio_less <= #0.1 width_ratio_less;
-            height_ratio_less <= #0.1 height_ratio_less;
             width_ratio_greater <= #0.1 width_ratio_greater;
             height_ratio_greater <= #0.1 height_ratio_greater;
             axis_pre_cal_done_r <= #0.1 axis_pre_cal_done_r;
@@ -186,23 +182,24 @@ module resize_axis (
     assign current_row_y_next = (pixel_cnt_next == crop_size) ? current_row_y + 1 : current_row_y;
 
     // ============ 第二级计算 ============
-    // 第二级: 使用第一级锁存结果计算 width_ratio_greater * i - pre_bias
-    assign x_delta_sub[15:0]   = x_delta_mul_r[15:0]   - pre_bias - 16'b1;
-    assign x_delta_sub[31:16]  = x_delta_mul_r[31:16]  - pre_bias - 16'b1;
-    assign x_delta_sub[47:32]  = x_delta_mul_r[47:32]  - pre_bias - 16'b1;
-    assign x_delta_sub[63:48]  = x_delta_mul_r[63:48]  - pre_bias - 16'b1;
-    assign x_delta_sub[79:64]  = x_delta_mul_r[79:64]  - pre_bias - 16'b1;
-    assign x_delta_sub[95:80]  = x_delta_mul_r[95:80]  - pre_bias - 16'b1;
-    assign x_delta_sub[111:96] = x_delta_mul_r[111:96] - pre_bias - 16'b1;
-    assign x_delta_sub[127:112]= x_delta_mul_r[127:112]- pre_bias - 16'b1;
-    assign x_delta_sub[143:128]= x_delta_mul_r[143:128]- pre_bias - 16'b1;
-    assign x_delta_sub[159:144]= x_delta_mul_r[159:144]- pre_bias - 16'b1;
-    assign x_delta_sub[175:160]= x_delta_mul_r[175:160]- pre_bias - 16'b1;
-    assign x_delta_sub[191:176]= x_delta_mul_r[191:176]- pre_bias - 16'b1;
-    assign x_delta_sub[207:192]= x_delta_mul_r[207:192]- pre_bias - 16'b1;
-    assign x_delta_sub[223:208]= x_delta_mul_r[223:208]- pre_bias - 16'b1;
-    assign x_delta_sub[239:224]= x_delta_mul_r[239:224]- pre_bias - 16'b1;
-    assign x_delta_sub[255:240]= x_delta_mul_r[255:240]- pre_bias - 16'b1;
+    // 共享 subtrahend: pre_bias+1 预计算一次, 16 路减法复用
+    wire [15:0] sub_val = pre_bias + 16'd1;
+    assign x_delta_sub[15:0]   = x_delta_mul_r[15:0]   - sub_val;
+    assign x_delta_sub[31:16]  = x_delta_mul_r[31:16]  - sub_val;
+    assign x_delta_sub[47:32]  = x_delta_mul_r[47:32]  - sub_val;
+    assign x_delta_sub[63:48]  = x_delta_mul_r[63:48]  - sub_val;
+    assign x_delta_sub[79:64]  = x_delta_mul_r[79:64]  - sub_val;
+    assign x_delta_sub[95:80]  = x_delta_mul_r[95:80]  - sub_val;
+    assign x_delta_sub[111:96] = x_delta_mul_r[111:96] - sub_val;
+    assign x_delta_sub[127:112]= x_delta_mul_r[127:112]- sub_val;
+    assign x_delta_sub[143:128]= x_delta_mul_r[143:128]- sub_val;
+    assign x_delta_sub[159:144]= x_delta_mul_r[159:144]- sub_val;
+    assign x_delta_sub[175:160]= x_delta_mul_r[175:160]- sub_val;
+    assign x_delta_sub[191:176]= x_delta_mul_r[191:176]- sub_val;
+    assign x_delta_sub[207:192]= x_delta_mul_r[207:192]- sub_val;
+    assign x_delta_sub[223:208]= x_delta_mul_r[223:208]- sub_val;
+    assign x_delta_sub[239:224]= x_delta_mul_r[239:224]- sub_val;
+    assign x_delta_sub[255:240]= x_delta_mul_r[255:240]- sub_val;
 
     // next_bias: width_ratio_greater(Q1.7.8) * data_valid(=ratioed_x[15:8], integer part)
     wire [23:0] next_bias_mul_comb ;
@@ -212,13 +209,9 @@ module resize_axis (
     assign pre_bias_next_s = (pixel_cnt_next_r == crop_size) ? 17'd0 :
                               const_16s + pre_bias_s - $signed({1'b0, next_bias_mul_r});
     assign pre_bias_next = pre_bias_next_s[15:0];
-    // DSP 乘积, 同时用于组合逻辑和 Stage1 寄存器 (共享同一 DSP)
-    wire [31:0] ratioed_x_full = width_ratio_less * ratioed_x_full_add + {20'b0,1'b1,12'b0};
-    assign ratioed_x = ratioed_x_full_r[27:12];  // 从寄存器取, 切断 DSP→比较器 长路径
-
-    // 添加nudge值(+0.5 = +8'h80 in Q1.7.8), 再钳位 0~16
-    wire [15:0] ratioed_x_rnd = ratioed_x;
-    wire [7:0] data_valid_int = (ratioed_x_rnd[15:8] > 8'd16) ? 8'd16 : ratioed_x_rnd[15:8];
+    // 从寄存器取 ratioed_x, 切断 DSP→比较器 长路径
+    assign ratioed_x = ratioed_x_full_r[27:12];
+    wire [7:0] data_valid_int = (ratioed_x[15:8] > 8'd16) ? 8'd16 : ratioed_x[15:8];
 
     // ============ 流水线寄存器更新 ============
     // 第一级流水线寄存器: 锁存第一级乘法计算结果

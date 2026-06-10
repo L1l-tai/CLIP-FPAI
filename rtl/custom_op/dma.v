@@ -3,21 +3,21 @@
 // Orgnization   : Shanghai Fudan Microelectronics Co., Ltd. Confidential
 // File Name     : dma.v
 // Author        :
-// Project       : 
+// Project       :
 // Create Date   : 2021.04.01
 // Description   :
 // - Direct Memory Access
 //------------------------------------------------------------------------------
 // Modification History :
 // Rev     Date         Who          Description
-// 
+//
 //==============================================================================
 
 module dma(
 
     input         [ 31: 0]     arbase        , // 读地址基地址
     input         [ 15: 0]     arsize        , // 读数据长度（字数）
-                                            
+
     input         [ 31: 0]     awbase        , // 写地址基地址
     input         [ 15: 0]     awsize        , // 写数据长度（字数）
 
@@ -64,11 +64,11 @@ module dma(
    // ---------- 写通道逻辑 -----------
 
    // 写地址有效信号控制逻辑：
-   // 复位时清零；启动时置位；当最后一个数据写入完成（计数器为0且握手成功）时清零
+   // size=0 时不激活 aawvalid (避免无效 AXI 写事务)
    always@(posedge clk or negedge rst_n)begin
         if(rst_n==1'b0)
             aawvalid <= #0.1 1'b0;
-        else if(wr_start)
+        else if(wr_start && awsize != 0)
             aawvalid <= #0.1 1'b1;
         else if(aawready && dma_cnt1==0)
             aawvalid <= #0.1 1'b0;
@@ -85,22 +85,22 @@ module dma(
    end
 
    // 写数据计数器逻辑：
-   // 复位时清零；启动时加载写长度；每次写握手成功时减1
+   // 加载 awsize-1，仅 cnt>0 时递减 (确保 wr_done 在 data_valid 有效时触发)
    always@(posedge clk or negedge rst_n)begin
         if(rst_n==1'b0)
             dma_cnt1 <= #0.1 0;
-        else if(wr_start && !wr_active)
+        else if(wr_start && awsize != 0)
             dma_cnt1 <= #0.1 awsize - 1'b1;
         else if(aawvalid & aawready & dma_cnt1 > 0)
             dma_cnt1 <= #0.1 dma_cnt1 - 1'b1;
    end
 
    // 写地址生成逻辑：
-   // 复位时清零；启动时加载基地址；每次写握手成功时地址增加64（字节偏移）
+   // 仅 cnt>0 时递增地址 (与计数器递减同步)
    always@(posedge clk or negedge rst_n)begin
         if(rst_n==1'b0)
             awaddr <= #0.1 0;
-        else if(wr_start)
+        else if(wr_start && awsize != 0)
             awaddr <= #0.1 awbase;
         else if(aawvalid & aawready & dma_cnt1 > 0)
             awaddr <= #0.1 awaddr + 64;
@@ -117,46 +117,47 @@ module dma(
         else if(rd_done)
             rd_active <= #0.1 1'b0;
    end
-   
+
    // 读数据计数器逻辑：
-   // 复位时清零；启动时加载读长度；每次读握手成功时减1
+   // 加载 arsize-1，仅 cnt>0 时递减 (确保 rd_done 在有效时触发)
    always@(posedge clk or negedge rst_n)begin
         if(rst_n==1'b0)
             dma_cnt0 <= #0.1 0;
-        else if(rd_start && !rd_active)
+        else if(rd_start && arsize != 0)
             dma_cnt0 <= #0.1 arsize - 1'b1;
-        else if(arvalid & arready & (dma_cnt0 > 0))
+        else if(arvalid & arready & dma_cnt0 > 0)
             dma_cnt0 <= #0.1 dma_cnt0-1'b1;
    end
 
    // 读地址生成逻辑：
-   // 复位时清零；启动时加载基地址；每次读握手成功时地址增加64（字节偏移）
+   // 仅 cnt>0 时递增地址 (与计数器递减同步)
    always@(posedge clk or negedge rst_n)begin
         if(rst_n==1'b0)
             araddr <= #0.1 0;
-        else if(rd_start)
+        else if(rd_start && arsize != 0)
             araddr <= #0.1 arbase;
         else if(arvalid & arready & dma_cnt0 > 0)
             araddr <= #0.1 araddr + 64;
    end
 
    // 读地址有效信号控制逻辑：
-   // 复位时清零；启动时置位；当最后一个数据读取完成（计数器为0且握手成功）时清零
+   // size=0 时不激活 arvalid (避免无效 AXI 读事务)
    always@(posedge clk or negedge rst_n)begin
         if(rst_n==1'b0)
             arvalid <= #0.1 1'b0;
-        else if(rd_start)
+        else if(rd_start && arsize != 0)
             arvalid <= #0.1 1'b1;
         else if(arready && dma_cnt0==0)
             arvalid <= #0.1 1'b0;
    end
 
-   // 生成读完成脉冲：在读活动状态下，计数器为0且最后一次握手完成时产生
-   assign rd_done = rd_active && (dma_cnt0 == 0) && arvalid && arready;
-   // 生成写完成脉冲：在写活动状态下，计数器为0且最后一次握手完成时产生
-   assign wr_done = wr_active && (dma_cnt1 == 0) && aawvalid && aawready;
-   
+   // 生成读完成脉冲：
+   // arsize=0 时 start 后下一拍通过 rd_active 产生 done
+   assign rd_done = (arsize == 0) ? rd_active :
+                    rd_active && (dma_cnt0 == 0) && arvalid && arready;
+   // 生成写完成脉冲：
+   // awsize=0 时 start 后下一拍通过 wr_active 产生 done
+   assign wr_done = (awsize == 0) ? wr_active :
+                    wr_active && (dma_cnt1 == 0) && aawvalid && aawready;
+
 endmodule
-
-
-  

@@ -72,8 +72,7 @@ wire       [31 : 0]         arbase_data_gen_c;
 wire       [15 : 0]         arsize_data_gen_c;
 wire       [31 : 0]         awbase_gen_c;
 wire       [15 : 0]         awsize_gen_c;
-wire       [31 : 0]         arbase_offset_c;
-wire       [31 : 0]         awbase_offset_c;
+
 
 reg        [31 : 0]         arbase_offset;
 reg        [31 : 0]         awbase_offset;
@@ -204,10 +203,12 @@ assign trans_data_pos = ~trans_data_reg & trans_data;
 
 assign indice_now = current_indices[current_indices_cnt*32+ : 32];
 
+(* use_dsp = "yes" *) wire [31:0] arbase_offset_c;
 assign arbase_offset_c = indice_now_reg * (data_width_reg << 6);
 assign arbase_data_gen_c = arbase_data_reg + arbase_offset;
 assign arsize_data_gen_c = data_width_reg;
 
+(* use_dsp = "yes" *) wire [31:0] awbase_offset_c;
 assign awbase_offset_c = output_addr_cnt * (data_width_reg << 6);
 assign awbase_gen_c = awbase_dout_reg + awbase_offset;
 assign awsize_gen_c = data_width_reg;

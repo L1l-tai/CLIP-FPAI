@@ -228,7 +228,7 @@ module arbiter (
     // 数据接收就绪信号
     assign itf_rready = gather_grant   ? gather_din_ready   :
                         hadamard_grant ? hadamard_din_ready :
-                        resize_grant   ? resize_din_ready   : 1'b0;
+                        resize_grant   ? resize_din_ready   : 1'b1;
 
     // ============ 完成信号路由 ============
     assign gather_data_ready    = gather_grant   ? itf_data_ready : 1'b0;

@@ -47,8 +47,6 @@ module resize (
 
 reg     [31 : 0]            rs_regs   [15:0];
 reg     [31 : 0]            rs_regs_2 [15:0];
-reg     [31 : 0]            rs_out_regs [15:0];
-reg     [1 : 0]             trans_status_reg;
 reg     [1 : 0]             rd_cnt;
 reg     [1 : 0]             wr_cnt;
 
@@ -68,8 +66,6 @@ reg                         result_valid;
     reg                         result_valid_reg;
     wire                        result_valid_pos;
 
-
-wire                        resize_status_r3_pos;
 
 // ============ FIFO interface signals ============
 // 批量写接口
@@ -148,9 +144,6 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 
-// resize_status_r3 上升沿检测
-assign resize_status_r3_pos = resize_status_r3 & ~resize_status_r4;
-
 // resize_status 下降沿检测 (离开 RESIZE 状态时清零 result_valid)
 reg  resize_status_reg;
 wire resize_status_negedge = ~resize_status & resize_status_reg;
@@ -223,15 +216,6 @@ assign batch_wr_data = {result_val[15], result_val[14], result_val[13], result_v
 
 assign batch_wr_en    = result_valid_pos;
 assign batch_wr_count = data_valid_reg[4:0];
-
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        trans_status_reg <= #0.1 2'b00;
-    end
-    else begin
-        trans_status_reg <= #0.1 trans_status;
-    end
-end
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -311,10 +295,10 @@ assign y_delta_inv = 4'd8 - y_delta_small;
 // 计算每个像素点的四个权重 (无符号整型计算)
 wire    [3:0]               x_delta_small [15:0];
 wire    [3:0]               x_delta_inv [15:0];  // 1 - x_delta, 只取低8位
-(* use_dsp = "yes" *)  wire    [7:0]              weight_11_c [15:0];  // P到Q11权重(组合逻辑)
-(* use_dsp = "yes" *)  wire    [7:0]              weight_12_c [15:0];  // P到Q12权重(组合逻辑)
-(* use_dsp = "yes" *)  wire    [7:0]              weight_21_c [15:0];  // P到Q21权重(组合逻辑)
-(* use_dsp = "yes" *)  wire    [7:0]              weight_22_c [15:0];  // P到Q22权重(组合逻辑)
+wire    [7:0]              weight_11_c [15:0];  // P到Q11权重(组合逻辑, 4b×4b→LUT)
+wire    [7:0]              weight_12_c [15:0];  // P到Q12权重(组合逻辑)
+wire    [7:0]              weight_21_c [15:0];  // P到Q21权重(组合逻辑)
+wire    [7:0]              weight_22_c [15:0];  // P到Q22权重(组合逻辑)
 
 // 权重寄存器
 reg     [7:0]              weight_11 [15:0];  // P到Q11权重
@@ -457,7 +441,6 @@ endgenerate
 (* use_dsp = "yes" *) wire [31:0] result_RG_12_c [3:0];
 (* use_dsp = "yes" *) wire [31:0] result_RG_21_c [3:0];
 (* use_dsp = "yes" *) wire [31:0] result_RG_22_c [3:0];
-// B 通道乘法结果 (16-bit, 4 邻居 × 4 像素)
 (* use_dsp = "yes" *) wire [15:0] result_B_11_c  [3:0];
 (* use_dsp = "yes" *) wire [15:0] result_B_12_c  [3:0];
 (* use_dsp = "yes" *) wire [15:0] result_B_21_c  [3:0];
@@ -474,69 +457,30 @@ reg [15:0] result_B_12  [3:0];
 reg [15:0] result_B_21  [3:0];
 reg [15:0] result_B_22  [3:0];
 
-// 组选择 (4 个 4:1 MUX, 按 pass_s2 从 q_val[15:0]/weight[15:0] 选组)
-wire [7:0]  weight_11_grp [3:0];
-wire [7:0]  weight_12_grp [3:0];
-wire [7:0]  weight_21_grp [3:0];
-wire [7:0]  weight_22_grp [3:0];
-wire [31:0] q11_val_grp [3:0];
-wire [31:0] q12_val_grp [3:0];
-wire [31:0] q21_val_grp [3:0];
-wire [31:0] q22_val_grp [3:0];
-
+// 直接索引: {pass_s2, sub_idx} 替代 group_sel MUX 树
+wire [3:0] dsp_idx [3:0];
 genvar gs;
 generate
-    for (gs = 0; gs < 4; gs = gs + 1) begin: group_sel
-        assign weight_11_grp[gs] = (pass_s2 == 2'd0) ? weight_11[gs]      :
-                                   (pass_s2 == 2'd1) ? weight_11[gs + 4]  :
-                                   (pass_s2 == 2'd2) ? weight_11[gs + 8]  :
-                                                        weight_11[gs + 12];
-        assign weight_12_grp[gs] = (pass_s2 == 2'd0) ? weight_12[gs]      :
-                                   (pass_s2 == 2'd1) ? weight_12[gs + 4]  :
-                                   (pass_s2 == 2'd2) ? weight_12[gs + 8]  :
-                                                        weight_12[gs + 12];
-        assign weight_21_grp[gs] = (pass_s2 == 2'd0) ? weight_21[gs]      :
-                                   (pass_s2 == 2'd1) ? weight_21[gs + 4]  :
-                                   (pass_s2 == 2'd2) ? weight_21[gs + 8]  :
-                                                        weight_21[gs + 12];
-        assign weight_22_grp[gs] = (pass_s2 == 2'd0) ? weight_22[gs]      :
-                                   (pass_s2 == 2'd1) ? weight_22[gs + 4]  :
-                                   (pass_s2 == 2'd2) ? weight_22[gs + 8]  :
-                                                        weight_22[gs + 12];
-        assign q11_val_grp[gs]   = (pass_s2 == 2'd0) ? q11_val[gs]      :
-                                   (pass_s2 == 2'd1) ? q11_val[gs + 4]  :
-                                   (pass_s2 == 2'd2) ? q11_val[gs + 8]  :
-                                                        q11_val[gs + 12];
-        assign q12_val_grp[gs]   = (pass_s2 == 2'd0) ? q12_val[gs]      :
-                                   (pass_s2 == 2'd1) ? q12_val[gs + 4]  :
-                                   (pass_s2 == 2'd2) ? q12_val[gs + 8]  :
-                                                        q12_val[gs + 12];
-        assign q21_val_grp[gs]   = (pass_s2 == 2'd0) ? q21_val[gs]      :
-                                   (pass_s2 == 2'd1) ? q21_val[gs + 4]  :
-                                   (pass_s2 == 2'd2) ? q21_val[gs + 8]  :
-                                                        q21_val[gs + 12];
-        assign q22_val_grp[gs]   = (pass_s2 == 2'd0) ? q22_val[gs]      :
-                                   (pass_s2 == 2'd1) ? q22_val[gs + 4]  :
-                                   (pass_s2 == 2'd2) ? q22_val[gs + 8]  :
-                                                        q22_val[gs + 12];
+    for (gs = 0; gs < 4; gs = gs + 1) begin: dsp_idx_gen
+        assign dsp_idx[gs] = {pass_s2, gs[1:0]};
     end
 endgenerate
 
 genvar m;
 generate
     for (m = 0; m < 4; m = m + 1) begin: multiply_stage
-        wire [23:0] A_RG_11 = {1'b0, q11_val_grp[m][23:16], 8'b0, q11_val_grp[m][15:8]};
-        wire [23:0] A_RG_12 = {1'b0, q12_val_grp[m][23:16], 8'b0, q12_val_grp[m][15:8]};
-        wire [23:0] A_RG_21 = {1'b0, q21_val_grp[m][23:16], 8'b0, q21_val_grp[m][15:8]};
-        wire [23:0] A_RG_22 = {1'b0, q22_val_grp[m][23:16], 8'b0, q22_val_grp[m][15:8]};
-        (* use_dsp = "yes" *) assign result_RG_11_c[m] = A_RG_11 * weight_11_grp[m];
-        (* use_dsp = "yes" *) assign result_RG_12_c[m] = A_RG_12 * weight_12_grp[m];
-        (* use_dsp = "yes" *) assign result_RG_21_c[m] = A_RG_21 * weight_21_grp[m];
-        (* use_dsp = "yes" *) assign result_RG_22_c[m] = A_RG_22 * weight_22_grp[m];
-        (* use_dsp = "yes" *) assign result_B_11_c[m]  = q11_val_grp[m][7:0] * weight_11_grp[m];
-        (* use_dsp = "yes" *) assign result_B_12_c[m]  = q12_val_grp[m][7:0] * weight_12_grp[m];
-        (* use_dsp = "yes" *) assign result_B_21_c[m]  = q21_val_grp[m][7:0] * weight_21_grp[m];
-        (* use_dsp = "yes" *) assign result_B_22_c[m]  = q22_val_grp[m][7:0] * weight_22_grp[m];
+        wire [23:0] A_RG_11 = {1'b0, q11_val[dsp_idx[m]][23:16], 8'b0, q11_val[dsp_idx[m]][15:8]};
+        wire [23:0] A_RG_12 = {1'b0, q12_val[dsp_idx[m]][23:16], 8'b0, q12_val[dsp_idx[m]][15:8]};
+        wire [23:0] A_RG_21 = {1'b0, q21_val[dsp_idx[m]][23:16], 8'b0, q21_val[dsp_idx[m]][15:8]};
+        wire [23:0] A_RG_22 = {1'b0, q22_val[dsp_idx[m]][23:16], 8'b0, q22_val[dsp_idx[m]][15:8]};
+        assign result_RG_11_c[m] = A_RG_11 * weight_11[dsp_idx[m]];
+        assign result_RG_12_c[m] = A_RG_12 * weight_12[dsp_idx[m]];
+        assign result_RG_21_c[m] = A_RG_21 * weight_21[dsp_idx[m]];
+        assign result_RG_22_c[m] = A_RG_22 * weight_22[dsp_idx[m]];
+        assign result_B_11_c[m]  = q11_val[dsp_idx[m]][7:0] * weight_11[dsp_idx[m]];
+        assign result_B_12_c[m]  = q12_val[dsp_idx[m]][7:0] * weight_12[dsp_idx[m]];
+        assign result_B_21_c[m]  = q21_val[dsp_idx[m]][7:0] * weight_21[dsp_idx[m]];
+        assign result_B_22_c[m]  = q22_val[dsp_idx[m]][7:0] * weight_22[dsp_idx[m]];
     end
 endgenerate
 

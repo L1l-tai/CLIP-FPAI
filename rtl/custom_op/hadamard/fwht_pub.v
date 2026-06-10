@@ -37,10 +37,7 @@ module fwht_pub #(
     reg [MAN_W+1:0]   s1_man_big;          // 15-bit, 含guard bit
     reg [MAN_W+5:0]   s1_man_small_shifted; // 19-bit, 对齐后的小数尾数
     reg               s1_a_ge_b;
-    reg               s1_same_sign;
     reg               s1_valid;
-
-    wire [MAN_W+1:0]  man_small_aligned;
 
     // --- Stage 2: ADD/SUB 运算 ---
     reg [MAN_W+2:0]   s2_sum_add;    // 16-bit, 加法结果
@@ -51,6 +48,23 @@ module fwht_pub #(
     reg [EXP_W:0]     s2_exp_sub;
     reg               s2_sign_sub;
     reg               s2_valid;
+
+    // --- 流水线化的符号 (随数据一起传递) ---
+    reg s1_sign_a_r, s1_sign_b_r;
+    reg s2_sign_a_r, s2_sign_b_r;
+    reg s3_sign_a_r, s3_sign_b_r;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            s1_sign_a_r <= 1'b0; s1_sign_b_r <= 1'b0;
+            s2_sign_a_r <= 1'b0; s2_sign_b_r <= 1'b0;
+            s3_sign_a_r <= 1'b0; s3_sign_b_r <= 1'b0;
+        end else begin
+            s1_sign_a_r <= sign_a; s1_sign_b_r <= sign_b;
+            s2_sign_a_r <= s1_sign_a_r; s2_sign_b_r <= s1_sign_b_r;
+            s3_sign_a_r <= s2_sign_a_r; s3_sign_b_r <= s2_sign_b_r;
+        end
+    end
 
     // --- Stage 3: Normalization (仅FP16使用, INT16跳过) ---
     reg [MAN_W:0]     s3_man_add_norm;
@@ -65,7 +79,6 @@ module fwht_pub #(
     // --- 组合逻辑辅助信号 ---
     wire [EXP_W:0]  exp_diff_s;
     wire [EXP_W:0]  exp_diff_abs;
-    wire [EXP_W:0]  exp_diff_neg;
     wire            a_ge_b;
     wire [MAN_W+1:0] man_big;
     wire [MAN_W+1:0] man_small;
@@ -119,7 +132,6 @@ module fwht_pub #(
 
     assign exp_diff_s   = {1'b0, exp_a} - {1'b0, exp_b};
     assign exp_diff_abs = exp_diff_s[EXP_W] ? -exp_diff_s : exp_diff_s;
-    assign exp_diff_neg = ~exp_diff_s + 1'b1;
     assign a_ge_b = (exp_a > exp_b) || (exp_a == exp_b && man_a >= man_b);
     assign man_big = a_ge_b ? man_a : man_b;
     assign man_small = a_ge_b ? man_b : man_a;
@@ -131,7 +143,6 @@ module fwht_pub #(
             s1_valid      <= valid_in;
             s1_sign_a     <= sign_a;
             s1_sign_b     <= sign_b;
-            s1_same_sign  <= (sign_a == sign_b);
             s1_a_ge_b     <= a_ge_b;
             s1_exp_diff   <= exp_diff_s[EXP_W:0];
             s1_exp_max    <= a_ge_b ? {1'b0, exp_a} : {1'b0, exp_b};
@@ -144,17 +155,15 @@ module fwht_pub #(
     // Stage 2: ADD/SUB 运算
     // =========================================================================
 
-    assign man_small_aligned = s1_man_small_shifted;
-
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             s2_valid <= 1'b0;
         end else begin
             s2_valid    <= s1_valid;
-            s2_sum_add  <= {1'b0, s1_man_big} + {1'b0, man_small_aligned};
+            s2_sum_add  <= {1'b0, s1_man_big} + {1'b0, s1_man_small_shifted};
             s2_exp_add  <= s1_exp_max;
             s2_sign_add <= s1_sign_a;
-            s2_diff_sub <= s1_man_big - man_small_aligned;
+            s2_diff_sub <= s1_man_big - s1_man_small_shifted;
             s2_sign_sub <= s1_a_ge_b ? s1_sign_a : ~s1_sign_a;
             s2_exp_sub  <= s1_exp_max;
         end
@@ -187,7 +196,7 @@ module fwht_pub #(
         (s2_diff_sub_norm[3])  ? 3'd3 :
         (s2_diff_sub_norm[2])  ? 3'd2 :
         (s2_diff_sub_norm[1])  ? 3'd1 :
-        (s2_diff_sub_norm[0])  ? 3'd0 : 3'd0;
+                         3'd0;  // bit[0] → pos 0, 无bit → 0 (由 s2_diff_sub==0 单独处理)
 
     assign msb_in_upper = (group_msb_5 != 3'd6);
     assign sub_leading_pos = msb_in_upper ? (group_msb_5 + 3'd6) : group_msb_0;
@@ -268,14 +277,15 @@ module fwht_pub #(
     // INT16 merge: 从宽幅值重建 16-bit 2补码
     //   ADD: s2_sum_add[MAN_W+1:1] = 14-bit 幅值 → {2'b0, 14-bit} → 符号决定2补码
     //   SUB: s2_diff_sub[MAN_W:1]   = 13-bit 幅值 → {3'b0, 13-bit} → 符号决定2补码
-    wire [15:0] int16_add_pos;
+    // INT16 merge: 门控, cal_percision=1 时综合器优化掉
     wire [15:0] int16_add_2s;
-    wire [15:0] int16_sub_pos;
     wire [15:0] int16_sub_2s;
-    assign int16_add_pos = {2'b0, s2_sum_add[MAN_W+1:1]};
-    assign int16_add_2s  = s2_sign_add ? (~int16_add_pos + 16'd1) : int16_add_pos;
-    assign int16_sub_pos = {3'b0, s2_diff_sub[MAN_W:1]};
-    assign int16_sub_2s  = s2_sign_sub ? (~int16_sub_pos + 16'd1) : int16_sub_pos;
+    wire [15:0] int16_add_pos = cal_percision ? 16'd0 : {2'b0, s2_sum_add[MAN_W+1:1]};
+    wire [15:0] int16_sub_pos = cal_percision ? 16'd0 : {3'b0, s2_diff_sub[MAN_W:1]};
+    assign int16_add_2s = cal_percision ? 16'd0 :
+                          (s2_sign_add ? (~int16_add_pos + 16'd1) : int16_add_pos);
+    assign int16_sub_2s = cal_percision ? 16'd0 :
+                          (s2_sign_sub ? (~int16_sub_pos + 16'd1) : int16_sub_pos);
 
     wire [FP_W-1:0] s3_merge_add;
     wire [FP_W-1:0] s3_merge_sub;
@@ -297,8 +307,14 @@ module fwht_pub #(
         end else begin
             valid_out <= cal_percision ? s3_valid : s2_valid;
 
-            result_add <= sign_a == sign_b ? s3_merge_add : s3_merge_sub;
-            result_sub <= sign_a == sign_b ? s3_merge_sub : s3_merge_add;
+            // 使用流水线化符号 (随数据对齐), 非组合逻辑 sign_a/sign_b
+            if (cal_percision) begin
+                result_add <= s3_sign_a_r == s3_sign_b_r ? s3_merge_add : s3_merge_sub;
+                result_sub <= s3_sign_a_r == s3_sign_b_r ? s3_merge_sub : s3_merge_add;
+            end else begin
+                result_add <= s2_sign_a_r == s2_sign_b_r ? s3_merge_add : s3_merge_sub;
+                result_sub <= s2_sign_a_r == s2_sign_b_r ? s3_merge_sub : s3_merge_add;
+            end
         end
     end
 

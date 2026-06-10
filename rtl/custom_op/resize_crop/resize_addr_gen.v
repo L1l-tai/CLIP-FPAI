@@ -53,7 +53,6 @@ module resize_addr_gen(
     reg        pipe_valid;
     reg        pipe_valid_2;
     reg [16:0] y_bias_sum_r;
-    reg [16:0] y_bias_sum_p1_r;
     reg [31:0] y_bias_x_rwidth_r;
     reg [31:0] y_bias_p1_x_rwidth_r;
     reg [15:0] total_src_blocks_r;
@@ -85,7 +84,7 @@ module resize_addr_gen(
     wire [15:0] total_src_blocks    = wheight_rs * src_blocks_per_row;
 
     assign rs_num    = wheight_rs * dst_blocks_per_row;
-    assign src_done  = (total_rd_cnt >= total_src_blocks_r);
+    assign src_done  = (total_src_blocks_r > 0) && (total_rd_cnt >= total_src_blocks_r);
 
     // 寄存常量乘积, 消除 DSP→比较器 的长组合路径
     always @(posedge clk or negedge rst_n) begin
@@ -105,12 +104,12 @@ module resize_addr_gen(
     wire [17:0] crop_off_x_b  = {crop_off_x, 2'b0};  // crop_off_x * 4
 
     // 加法独立 (Stage2 锁存) — 路径: reg→adder→reg
-    wire [16:0] y_bias_sum    = y_bias + crop_off_y;
-    wire [16:0] y_bias_sum_p1 = y_bias + crop_off_y + 16'd1;
+    wire [16:0] y_bias_sum = y_bias + crop_off_y;
 
     // DSP 乘法 (Stage3 锁存) — 路径: reg(加法结果)→DSP→reg
     assign y_bias_x_rwidth    = y_bias_sum_r * rwidth_bytes;
-    assign y_bias_p1_x_rwidth = y_bias_sum_p1_r * rwidth_bytes;
+    // 代数化简: (y_bias_sum+1)*rwidth = y_bias_x_rwidth_r + rwidth_bytes (省1 DSP)
+    assign y_bias_p1_x_rwidth = y_bias_x_rwidth_r + {14'd0, rwidth_bytes};
 
     assign addr_rd_cnt      = (gen_status && row_changed) ? 16'd0 : rs_rd_cnt;
     assign arbase_offset_c  = crop_off_x_b + (addr_rd_cnt << RS_SHIFT);
@@ -171,14 +170,12 @@ module resize_addr_gen(
             rbase_rs_reg <= #0.1 32'd0;
             wbase_rs_reg <= #0.1 32'd0;
             y_bias_sum_r    <= #0.1 17'd0;
-            y_bias_sum_p1_r <= #0.1 17'd0;
             pipe_valid   <= #0.1 1'b0;
         end
         else if (gen_status) begin
             rbase_rs_reg <= #0.1 rbase_rs;
             wbase_rs_reg <= #0.1 wbase_rs;
             y_bias_sum_r    <= #0.1 y_bias_sum;
-            y_bias_sum_p1_r <= #0.1 y_bias_sum_p1;
             pipe_valid   <= #0.1 1'b1;
         end
         else begin

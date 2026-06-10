@@ -71,7 +71,7 @@ wire        wr_ddr;
 wire        rd_ddr;
 
 assign wr_ddr = (state == WR_PIPLINE) | (state == WR_ONLY);
-assign rd_ddr = (state == WR_PIPLINE) | (state == RD_ONLY); 
+assign rd_ddr = (state == WR_PIPLINE) | (state == RD_ONLY);
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
