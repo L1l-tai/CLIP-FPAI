@@ -44,8 +44,10 @@ reg     [15 : 0]            hd_rd_cnt;
 reg     [15 : 0]            hd_wr_cnt;
 reg     [1 : 0]             trans_status_reg;
 
-reg     [31 : 0]            arbase_hd_reg;
-reg     [31 : 0]            awbase_hd_reg;
+    reg     [31 : 0]            arbase_hd_s1;
+    reg     [31 : 0]            arbase_hd_s2;
+    reg     [31 : 0]            awbase_hd_s1;
+    reg     [31 : 0]            awbase_hd_s2;
 
 wire       [31 : 0]         arbase_hd_gen_c;
 wire       [15 : 0]         arsize_hd_gen_c;
@@ -58,16 +60,20 @@ wire       [15 : 0]         fwht_num;
 wire                        rd_pos;
 wire                        wr_pos;
 
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        arbase_hd_reg <= #0.1 32'b0;
-        awbase_hd_reg <= #0.1 32'b0;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            arbase_hd_s1 <= #0.1 32'b0;
+            arbase_hd_s2 <= #0.1 32'b0;
+            awbase_hd_s1 <= #0.1 32'b0;
+            awbase_hd_s2 <= #0.1 32'b0;
+        end
+        else begin
+            arbase_hd_s1 <= #0.1 arbase_hd;
+            arbase_hd_s2 <= #0.1 arbase_hd_s1;
+            awbase_hd_s1 <= #0.1 awbase_hd;
+            awbase_hd_s2 <= #0.1 awbase_hd_s1;
+        end
     end
-    else begin
-        arbase_hd_reg <= #0.1 arbase_hd;
-        awbase_hd_reg <= #0.1 awbase_hd;
-    end
-end
 
 
 always @(posedge clk or negedge rst_n) begin
@@ -170,12 +176,12 @@ assign wr_pos = ~trans_status_reg[1] & trans_status[1];
 
 assign arbase_offset_c = cal_percision ? hd_rd_cnt << FWHT_SHIFT : hd_rd_cnt << (FWHT_SHIFT - 1);  // 64 * (32 / 8) = 256 BYTE
 // 修正：直接使用组合逻辑偏移量，避免额外寄存器延迟导致地址错位
-assign arbase_hd_gen_c = arbase_hd_reg + arbase_offset_c;
+assign arbase_hd_gen_c = arbase_hd_s2 + arbase_offset_c;
 assign arsize_hd_gen_c = cal_percision ? FWHT_WIDTH : FWHT_WIDTH -1;
 
 assign awbase_offset_c = cal_percision ? hd_wr_cnt << FWHT_SHIFT : hd_wr_cnt << (FWHT_SHIFT - 1);
 // 修正：直接使用组合逻辑偏移量
-assign awbase_hd_gen_c = awbase_hd_reg + awbase_offset_c;
+assign awbase_hd_gen_c = awbase_hd_s2 + awbase_offset_c;
 assign awsize_hd_gen_c = cal_percision ? FWHT_WIDTH : FWHT_WIDTH -1;
 
 endmodule

@@ -29,6 +29,7 @@ module hadamard (
     input                   comp_done     ,
 
     output                  fwht_done     ,
+    output                  rd_data_ready ,   // 读数据全部到达
 
     input                   clk           ,
     input                   rst_n
@@ -56,35 +57,60 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 
+// 读计数器: 武装-解除机制, 每 pulse 只计一次
+// armed=1 时 valid 上升沿触发计数, 然后武装解除; valid 下降沿重新武装
+reg rd_armed;
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        rd_cnt <= #0.1 2'd0;
+        rd_cnt    <= #0.1 2'd0;
+        rd_armed  <= #0.1 1'b1;
     end
     else begin
-        if(din_valid & din_ready) begin
-            rd_cnt <= #0.1 rd_cnt + 2'd1;
+        if(comp_done | fwht_status) begin
+            rd_cnt   <= #0.1 2'd0;
+            rd_armed <= #0.1 1'b1;
         end
-        else if(comp_done | fwht_status) begin
-            //计算完成或读取完毕后，清零计数器
-            rd_cnt <= #0.1 2'd0;
+        else if(din_valid & din_ready & rd_armed) begin
+            rd_cnt   <= #0.1 rd_cnt + 2'd1;
+            rd_armed <= #0.1 1'b0;
         end
-        else begin
-            rd_cnt <= #0.1 rd_cnt;
+        else if(~din_valid || ~din_ready) begin
+            rd_armed <= #0.1 1'b1;
         end
     end
 end
 
+// rd_data_ready: 读数据全部到达 (rd_cnt >= 每块预期读数)
+// FP16(cal_percision=1): 每块 2 DMA word → rd_cnt >= 2
+// INT8(cal_percision=0): 每块 1 DMA word → rd_cnt >= 1
+wire [1:0] rd_expected = cal_percision ? 2'd2 : 2'd1;
+assign rd_data_ready = (rd_cnt >= rd_expected);
+
+
+// 写计数器: 同样武装-解除机制
+reg dout_valid_r;
+reg wr_armed;
+
+always @(posedge clk or negedge rst_n) begin 
+    dout_valid_r <= #0.1 dout_valid;
+end
+
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        wr_cnt <= #0.1 2'd0;
+        wr_cnt   <= #0.1 2'd0;
+        wr_armed <= #0.1 1'b1;
     end
     else begin
-        if(dout_valid & dout_ready) begin
-            wr_cnt <= #0.1 wr_cnt + 2'd1;
+        if(comp_done | fwht_status) begin
+            wr_cnt   <= #0.1 2'd0;
+            wr_armed <= #0.1 1'b1;
         end
-        else if(comp_done | fwht_status) begin
-            //算子处理完成或写入完毕后，清零计数器
-            wr_cnt <= #0.1 2'd0;
+        else if(dout_valid & dout_ready & wr_armed) begin
+            wr_cnt   <= #0.1 wr_cnt + 2'd1;
+            wr_armed <= #0.1 1'b0;
+        end
+        else if(~dout_valid) begin
+            wr_armed <= #0.1 1'b1;
         end
         else begin
             wr_cnt <= #0.1 wr_cnt;
@@ -197,7 +223,7 @@ always @(posedge clk or negedge rst_n) begin
         if(w_reg_valid_pos) begin
            result_valid <= #0.1 1'b1; 
         end
-        else if(wr_done) begin
+        else if(wr_cnt==2) begin
             result_valid <= #0.1 1'b0;
         end
         else begin
@@ -573,8 +599,46 @@ assign dout_int8 = {fwht_out_regs[63][7:0], fwht_out_regs[62][7:0], fwht_out_reg
                     fwht_out_regs[3][7:0], fwht_out_regs[2][7:0], fwht_out_regs[1][7:0], fwht_out_regs[0][7:0]};
 
 assign din_ready = trans_status[0];
-assign dout_rs = cal_percision ? (wr_cnt == 0 ? dout_lo : dout_hi) : dout_int8;
-assign dout_valid_rs  = result_valid && trans_status[1];
+
+// ---- 输出状态机: 握手上升沿触发转移 + valid 立即拉低 ----
+reg [1:0] out_phase;   // 0=IDLE, 1=LO, 2=GAP, 3=HI
+reg [1:0] gap_cnt;
+wire      dout_hs     = dout_valid & dout_ready;
+reg       dout_hs_r;
+wire      dout_hs_pos;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) dout_hs_r <= #0.1 1'b0;
+    else         dout_hs_r <= #0.1 dout_hs;
+end
+assign dout_hs_pos = dout_hs & ~dout_hs_r;
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        out_phase <= #0.1 2'd0; gap_cnt <= #0.1 2'd0;
+    end else if (comp_done) begin
+        out_phase <= #0.1 2'd0; gap_cnt <= #0.1 2'd0;
+    end else begin
+        case (out_phase)
+            2'd0: if (w_reg_valid_pos)           out_phase <= #0.1 2'd1;
+            2'd1: if (dout_hs_pos) begin
+                if (cal_percision) begin
+                    out_phase <= #0.1 2'd2; gap_cnt <= #0.1 2'd0;
+                end else
+                    out_phase <= #0.1 2'd0;
+            end
+            2'd2: if (gap_cnt == 2'd2) begin
+                out_phase <= #0.1 2'd3;
+            end else begin
+                gap_cnt <= #0.1 gap_cnt + 2'd1;
+            end
+            2'd3: if (dout_hs_pos)               out_phase <= #0.1 2'd0;
+            default:                             out_phase <= #0.1 2'd0;
+        endcase
+    end
+end
+// valid: LO/HI 状态下, 握手发生后立即拉低 (防 AVR 重复捕获)
+assign dout_valid_rs = ((out_phase == 2'd1 || out_phase == 2'd3) && !dout_hs) && trans_status[1];
+assign dout_rs = cal_percision ? (out_phase == 2'd3 ? dout_hi : dout_lo) : dout_int8;
 assign fwht_done = result_valid;
 
 // 实例化 AVR 寄存器切片模块 (avr_rs)

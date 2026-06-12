@@ -49,6 +49,27 @@ module hadamard_sim;
 
     wire        reset_reg;
 
+    // 观测 hadamard 完成信号 (层次化引用)
+    wire        hd_comp_done;
+    wire        hd_rd_data_ready;
+    wire        hd_cal_percision;
+    wire [1:0]  hd_rd_cnt;
+    assign hd_comp_done     = U_customop_top.comp_done_hd;
+    assign hd_rd_data_ready = U_customop_top.rd_data_ready_hd;
+    assign hd_cal_percision = U_customop_top.U_hadamard.cal_percision;
+    assign hd_rd_cnt        = U_customop_top.U_hadamard.rd_cnt;
+
+    // 监控 rready 和 rd_data_ready 变化
+    reg         itf_rready_r;
+    always @(posedge clk) itf_rready_r <= itf_rready;
+    wire rready_negedge = !itf_rready && itf_rready_r;
+    wire [2:0] hd_fsm_state = U_customop_top.U_hadamard_fsm.state;
+    always @(posedge clk) begin
+        if (rready_negedge)
+            $display("TB: *** rready FELL (rd_ready=%b rd_cnt=%d state=%d cal=%b) ***",
+                     hd_rd_data_ready, hd_rd_cnt, hd_fsm_state, hd_cal_percision);
+    end
+
     // DUT实例化
     customop_top U_customop_top (
         .itf_ra_awaddr     (itf_ra_awaddr),
@@ -163,14 +184,110 @@ module hadamard_sim;
         end
     endtask
 
-    reg read_busy;
-    reg pending_awvalid;
-    reg [31:0] pending_awaddr;
-    reg [511:0] pending_awdata;
+    // ============================================================
+    // 真实 DDR 行为 AXI 内存模型
+    // - 读延迟 READ_LATENCY 周期
+    // - 支持流水线读 (多个 outstanding AR)
+    // - 写延迟 1 周期
+    // - 无硬编码事务计数限制
+    // ============================================================
+    localparam READ_LATENCY = 4;   // DDR 读延迟 (可调)
 
-    // 复位序列
+    // 读请求队列 (支持深度为 4 的 outstanding reads)
+    localparam R_QUEUE_DEPTH = 4;
+    reg [31:0]  r_queue_addr  [0:R_QUEUE_DEPTH-1];
+    reg [7:0]   r_queue_timer [0:R_QUEUE_DEPTH-1];
+    reg         r_queue_valid [0:R_QUEUE_DEPTH-1];
+    integer     r_queue_wr_ptr, r_queue_rd_ptr, r_queue_cnt;
+
+    // 写节拍计数 (跟踪突发内节拍数)
+    // ---- 读地址通道: 接受 AR, 入队 ----
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            itf_arready <= 1'b1;  // 默认 ready
+            r_queue_wr_ptr <= 0;
+            r_queue_cnt   <= 0;
+            for (int q = 0; q < R_QUEUE_DEPTH; q++) begin
+                r_queue_valid[q] <= 1'b0;
+            end
+        end else begin
+            // 背压: 队列满时 deassert arready
+            itf_arready <= (r_queue_cnt < R_QUEUE_DEPTH) ? 1'b1 : 1'b0;
+
+            // AR 握手: 入队
+            if (itf_arvalid && itf_arready) begin
+                r_queue_addr[r_queue_wr_ptr]  <= itf_araddr;
+                r_queue_timer[r_queue_wr_ptr] <= READ_LATENCY;
+                r_queue_valid[r_queue_wr_ptr] <= 1'b1;
+                r_queue_wr_ptr <= (r_queue_wr_ptr + 1) % R_QUEUE_DEPTH;
+                r_queue_cnt   <= r_queue_cnt + 1;
+                $display("TB: AR accepted Addr=0x%08X (queue depth=%d)",
+                         itf_araddr, r_queue_cnt + 1);
+            end
+        end
+    end
+
+    // ---- 读数据通道: 延迟后返回 (r_valid 只维持到握手) ----
+    reg r_data_pending;
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            itf_rvalid <= 1'b0; itf_rdata <= 512'd0;
+            r_queue_rd_ptr <= 0; r_data_pending <= 1'b0;
+        end else begin
+            itf_rvalid <= 1'b0;
+            if (r_data_pending) begin
+                itf_rdata  <= mem[get_mem_index(r_queue_addr[r_queue_rd_ptr])];
+                itf_rvalid <= 1'b1;
+                if (itf_rready) begin
+                    r_queue_valid[r_queue_rd_ptr] <= 1'b0;
+                    r_queue_rd_ptr <= (r_queue_rd_ptr + 1) % R_QUEUE_DEPTH;
+                    r_queue_cnt   <= r_queue_cnt - 1;
+                    r_data_pending <= 1'b0;
+                end
+            end else if (r_queue_cnt > 0 && r_queue_valid[r_queue_rd_ptr]) begin
+                if (r_queue_timer[r_queue_rd_ptr] > 0) begin
+                    r_queue_timer[r_queue_rd_ptr] <= r_queue_timer[r_queue_rd_ptr] - 1;
+                end else begin
+                    itf_rdata  <= mem[get_mem_index(r_queue_addr[r_queue_rd_ptr])];
+                    itf_rvalid <= 1'b1;
+                    r_data_pending <= 1'b1;
+                    $display("TB: R data Addr=0x%08X first16=0x%04X",
+                             r_queue_addr[r_queue_rd_ptr],
+                             mem[get_mem_index(r_queue_addr[r_queue_rd_ptr])][15:0]);
+                end
+            end
+        end
+    end
+
+    // ---- 写通道: 模拟真实 DDR 写入延迟, 每 beat 后拉低 awready ----
+    // ---- 写通道: 模拟 AXI 互联 wait state, 每 beat 后拉低 awready ----
+    localparam WRITE_LATENCY = 2;
+    reg [7:0] w_timer;
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            itf_awready <= 1'b1;
+            w_timer     <= 0;
+        end else begin
+            if (w_timer > 0) begin
+                itf_awready <= 1'b0;
+                w_timer <= w_timer - 1;
+            end 
+            else if (itf_awvalid && itf_awready) begin
+                mem[get_mem_index(itf_awaddr)] <= itf_awdata;
+                w_timer <= WRITE_LATENCY;
+                $display("TB: Wrote Addr=0x%08X data[15:0]=0x%04X",
+                         itf_awaddr, itf_awdata[15:0]);
+            end
+            else begin
+                itf_awready <= 1'b1;
+            end
+        end
+    end
+
+    // ============================================================
+    // 测试序列
+    // ============================================================
     initial begin
-        // 初始化输出
         rst_n = 0;
         ra_rst_n = 0;
         itf_ra_awaddr = 0;
@@ -180,120 +297,90 @@ module hadamard_sim;
         itf_ra_arvalid = 0;
         itf_ra_rready = 0;
 
-        itf_awready = 0;
-        itf_arready = 0;
-        itf_rdata = 0;
-        itf_rvalid = 0;
-        read_busy = 0;
-        pending_awvalid = 0;
-        pending_awaddr = 0;
-        pending_awdata = 0;
-
         // 等待全局复位
         #100;
         rst_n = 1;
         ra_rst_n = 1;
         #100;
 
-        // 初始化内存数组所有单元为0
+        // 初始化内存
         $display("Initializing Memory Array...");
         for (i = 0; i < 4096; i = i + 1) begin
             mem[i] = 512'd0;
         end
 
-        // --- 从文件加载测试数据 (FP16格式) ---
+        // 加载测试数据
         load_mem_from_file("fwht-input-fp16.mem", SRC_BASE_ADDR);
 
-        // --- 通过寄存器访问进行配置阶段 ---
-
+        // 配置寄存器
         $display("Configuring Hadamard Registers...");
-
-        // 1. 设置 hd_data_width (rfu_wreg2, Addr 0x07)
-        // 每次迭代处理的数据量，这里设为2 (2个512bit块 per iteration)
-        ra_write_reg(16'h07, 32'd2);
-
-        // 2. 设置 hd_cal_percision (rfu_wreg3, Addr 0x08)
-        // 1 = FP16 mode
-        ra_write_reg(16'h08, 32'd1);
-
-        // 3. 设置 Read Base (HD_RBASE_ADDR = 16'h32)
-        ra_write_reg(16'h32, SRC_BASE_ADDR);
-
-        // 4. 设置 Write Base (HD_WBASE_ADDR = 16'h33)
-        ra_write_reg(16'h33, DST_BASE_ADDR);
-
-        // 5. 设置 Write Size (HD_WRSIZE_ADDR = 16'h34)
-        // 总共要处理的512bit数据块数量
-        ra_write_reg(16'h34, TOTAL_BLOCKS);
-
-        // 6. 启动 Hadamard 计算 (HD_COMP_START_ADDR = 16'h31)
+        ra_write_reg(16'h07, 32'd2);                           // hd_data_width
+        ra_write_reg(16'h08, 32'd1);                           // cal_percision (FP16)
+        ra_write_reg(16'h32, SRC_BASE_ADDR);                   // rbase_hd
+        ra_write_reg(16'h33, DST_BASE_ADDR);                   // wbase_hd
+        ra_write_reg(16'h34, TOTAL_BLOCKS);                    // wrsize_hd
         $display("Starting Hadamard Computation...");
-        ra_write_reg(16'h31, 32'h0000_0001);
+        ra_write_reg(16'h31, 32'h0000_0001);                   // start
 
-        // --- DMA传输阶段 ---
-
-        error_flag = 0;
-
-        // 运行仿真直到完成或超时
+        // 等待 hadamard 计算完成
+        $display("Waiting for completion...");
         fork
             begin
-                // 超时监视器
                 #500000;
                 $display("ERROR: Simulation Timeout!");
                 $finish;
             end
             begin
-                // 监控完成状态
-                wait (reset_reg == 1);
-                $display("Computation Done Signal Detected.");
+                @(posedge hd_comp_done);
+                $display("Computation Done (hd_comp_done = 1).");
             end
-        join_none
+        join_any
+        disable fork;
 
-        // 服务 AXI 事务
-        serve_axi_transactions();
-        #50;
+        // 等待最后的 AXI 写事务完成 + 内存模型流水线排空
+        repeat (10) @(posedge clk);
 
         $display("DMA Transfer Completed.");
 
-        // --- 验证阶段 ---
-        // 注: FWHT是Walsh-Hadamard变换，输出是输入的Hadamard变换结果
-        // 这里仅做基本的格式验证，不验证具体数学结果
-
+        // 验证
         $display("Verifying Results...");
-
-        // 验证写入的数据格式是否正确
         for (i = 0; i < TOTAL_BLOCKS; i = i + 1) begin
-            integer dst_addr;
-            integer dst_idx;
-
+            integer dst_addr, dst_idx;
             dst_addr = DST_BASE_ADDR + i * 64;
             dst_idx = get_mem_index(dst_addr);
-
-            // 检查是否有非零数据写入
             if (mem[dst_idx] != 512'd0) begin
-                $display("PASS at Block[%d]: Addr 0x%08X, Data[63:0] = 0x%08X",
+                $display("PASS Block[%d]: Addr 0x%08X Data[63:0]=0x%016X",
                          i, dst_addr, mem[dst_idx][63:0]);
             end else begin
-                $display("WARNING at Block[%d]: Addr 0x%08X, No data written",
-                         i, dst_addr);
+                $display("WARNING Block[%d]: Addr 0x%08X No data written", i, dst_addr);
             end
         end
 
-        // --- 将硬件输出写入文件 ---
-        write_mem_to_file("fwht-output-fp16.mem",
-                          DST_BASE_ADDR, TOTAL_BLOCKS);
+        write_mem_to_file("fwht-output-fp16.mem", DST_BASE_ADDR, TOTAL_BLOCKS);
 
         $display("========================================");
         $display("SIMULATION COMPLETED");
         $display("========================================");
-
         #100;
         $finish;
     end
 
-    // ============================================================
-    // $writememh 写入内存数据 (与 $readmemh 完全对称, 最可靠)
-    // ============================================================
+    // 寄存器写入任务
+    task ra_write_reg;
+        input [15:0] addr_offset;
+        input [31:0] data;
+        begin
+            @(posedge ra_clk);
+            itf_ra_awaddr = addr_offset << 2;
+            itf_ra_awdata = data;
+            itf_ra_awvalid = 1;
+            wait (itf_ra_awready);
+            @(posedge ra_clk);
+            itf_ra_awvalid = 0;
+        end
+    endtask
+
+    // 写内存到文件
     task write_mem_to_file;
         input string filename;
         input [31:0] base_addr;
@@ -304,97 +391,6 @@ module hadamard_sim;
             end_idx   = get_mem_index(base_addr + (num_blocks - 1) * 64);
             $writememh(filename, mem, start_idx, end_idx);
             $display("Wrote %d blocks to %s", num_blocks, filename);
-        end
-    endtask
-
-    // 向寄存器访问接口写入的任务
-    task ra_write_reg;
-        input [15:0] addr_offset;
-        input [31:0] data;
-        begin
-            @(posedge ra_clk);
-            itf_ra_awaddr = addr_offset << 2;
-            itf_ra_awdata = data;
-            itf_ra_awvalid = 1;
-
-            wait (itf_ra_awready);
-            @(posedge ra_clk);
-            itf_ra_awvalid = 0;
-        end
-    endtask
-
-    // 处理来自 DUT 的 AXI 读写事务的过程
-    task serve_axi_transactions;
-        integer trans_count;
-        integer max_trans;
-        begin
-            // 估算最大事务数
-            // FP16: 每个iteration需要2个read beats (64个FP16数据)
-            // 2个blocks需要 2/2 = 1次iteration，需要1次read + 1次write
-            max_trans = 8;
-
-            trans_count = 0;
-            while (trans_count < max_trans) begin
-                @(posedge clk);
-
-                // 处理读地址通道 (AR)
-                if (itf_arvalid && !itf_arready && !read_busy) begin
-                    itf_arready <= 1;
-                    $display("TB: Received AR Addr: 0x%08X", itf_araddr);
-                end else begin
-                    itf_arready <= 0;
-                end
-
-                // 处理读数据通道 (R)
-                if (itf_arready && itf_arvalid) begin
-                    fork
-                        begin
-                            integer r_idx;
-                            reg [511:0] temp_data;
-
-                            read_busy <= 1;
-
-                            r_idx = get_mem_index(itf_araddr);
-
-                            temp_data = mem[r_idx];
-                            itf_rdata <= temp_data;
-                            itf_rvalid <= 1;
-                            $display("TB: Sent R Data from Idx %d (Addr 0x%08X), first16=0x%04X",
-                                     r_idx, itf_araddr, mem[r_idx][15:0]);
-
-                            wait (itf_rready);
-                            @(posedge clk);
-                            itf_rvalid <= 0;
-                            read_busy <= 0;
-                        end
-                    join_none
-                end
-
-                // 处理写地址通道 (AW)
-                if (itf_awvalid && !itf_awready) begin
-                    itf_awready <= 1;
-                    $display("TB: Received AW Addr: 0x%08X", itf_awaddr);
-                end else begin
-                    itf_awready <= 0;
-                end
-
-                // 处理写数据通道 (W) - 延迟一拍写入
-                if (itf_awvalid && itf_awready) begin
-                    pending_awvalid <= 1;
-                    pending_awaddr <= itf_awaddr;
-                end
-
-                // 下一周期写入内存
-                if (pending_awvalid) begin
-                    integer w_idx;
-                    w_idx = get_mem_index(pending_awaddr);
-                    mem[w_idx] <= itf_awdata;
-                    $display("TB: Wrote Data 0x%04X to Addr 0x%08X (Idx: %d)",
-                             itf_awdata[15:0], pending_awaddr, w_idx);
-                    pending_awvalid <= 0;
-                    trans_count = trans_count + 1;
-                end
-            end
         end
     endtask
 

@@ -119,6 +119,7 @@ module customop_top(
     wire              gen_status_hd;
     wire              fwht_status_hd;
     wire              fwht_done_hd;
+    wire              rd_data_ready_hd;    // 读数据全部到达
 
     //Hadamard addr_gen signals
     wire              hd_addr_gen_valid;
@@ -577,6 +578,7 @@ module customop_top(
       .hd_first_line    ( hd_first_line    ), // input
       .hd_last_line     ( hd_last_line     ), // input
       .fwht_done        ( fwht_done_hd     ), // input - from hadamard core
+      .rd_data_ready    ( rd_data_ready_hd ), // input - from hadamard core
 
       .arbase           ( arbase_hd_fsm    ), // output
       .arsize           ( arsize_hd_fsm    ), // output
@@ -638,6 +640,7 @@ module customop_top(
 
       .comp_done        ( comp_done_hd      ), // input
       .fwht_done        ( fwht_done_hd      ), // output
+      .rd_data_ready    ( rd_data_ready_hd ), // output
 
       .clk              ( clk               ),
       .rst_n            ( rst_n_1           )

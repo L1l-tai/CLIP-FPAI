@@ -25,6 +25,7 @@ module hadamard_fsm (
     input               hd_first_line,
     input               hd_last_line,
     input               fwht_done,
+    input               rd_data_ready, // 读数据全部到达
 
     output reg [31:0]   arbase,
     output reg [15:0]   arsize,
@@ -190,8 +191,8 @@ always @(*) begin
             end
         end
         RD_ONLY: begin
-            if (rd_done_reg) begin
-                next_state = FWHT; 
+            if (rd_done_reg && rd_data_ready) begin
+                next_state = FWHT;
             end
         end
         FWHT: begin
@@ -200,8 +201,8 @@ always @(*) begin
             end
         end
         WR_PIPLINE: begin
-            if (rd_done_reg && wr_done_reg) begin
-                next_state = FWHT; 
+            if (rd_done_reg && wr_done_reg && rd_data_ready) begin
+                next_state = FWHT;
             end
         end
         WR_ONLY: begin

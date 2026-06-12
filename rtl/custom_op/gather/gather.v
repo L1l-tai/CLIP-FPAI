@@ -61,7 +61,9 @@ wire    [31 : 0]            indice_now;
 reg     [31 : 0]            indice_now_reg;
 reg     [31 : 0]            data_width_reg;
 reg     [31 : 0]            indices_width_reg;
+reg     [31 : 0]            arbase_data_s1;
 reg     [31 : 0]            arbase_data_reg;
+reg     [31 : 0]            awbase_dout_s1;
 reg     [31 : 0]            awbase_dout_reg;
 
 wire    [511 : 0]           dout_rs    ;
@@ -82,15 +84,19 @@ always @(posedge clk or negedge rst_n) begin
         indice_now_reg <= #0.1 32'b0;
         data_width_reg <= #0.1 32'b0;
         indices_width_reg <= #0.1 32'b0;
+        arbase_data_s1 <= #0.1 32'b0;
         arbase_data_reg <= #0.1 32'b0;
+        awbase_dout_s1 <= #0.1 32'b0;
         awbase_dout_reg <= #0.1 32'b0;
     end
     else begin
         indice_now_reg <= #0.1 indice_now;
         data_width_reg <= #0.1 data_width;
         indices_width_reg <= #0.1 indices_width;
-        arbase_data_reg <= #0.1 arbase_data;
-        awbase_dout_reg <= #0.1 awbase_dout;
+        arbase_data_s1 <= #0.1 arbase_data;
+        arbase_data_reg <= #0.1 arbase_data_s1;
+        awbase_dout_s1 <= #0.1 awbase_dout;
+        awbase_dout_reg <= #0.1 awbase_dout_s1;
     end
 end
 
@@ -99,11 +105,12 @@ always@(posedge clk or negedge rst_n) begin
         arbase_offset <= #0.1 32'b0;
         awbase_offset <= #0.1 32'b0;
     end
-    else begin
+    else if (gen_status) begin
         arbase_offset <= #0.1 arbase_offset_c;
         awbase_offset <= #0.1 awbase_offset_c;
     end
 end
+
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -122,7 +129,8 @@ always @(posedge clk or negedge rst_n) begin
     end
     else begin 
         // 当计数器为0时，尝试生成一个周期的读取脉冲
-        if (current_indices_cnt == 0 & trans_data_reg) begin
+	        if ((current_indices_cnt == 4'd15 && trans_data_pos) ||
+	            (current_indices_cnt == 4'd0 && trans_data_reg)) begin
             if (!rinc_pulse_gen) begin
                 indices_fifo_rinc <= #0.1 1'b1;
                 rinc_pulse_gen    <= #0.1 1'b1;
@@ -205,12 +213,12 @@ assign indice_now = current_indices[current_indices_cnt*32+ : 32];
 
 (* use_dsp = "yes" *) wire [31:0] arbase_offset_c;
 assign arbase_offset_c = indice_now_reg * (data_width_reg << 6);
-assign arbase_data_gen_c = arbase_data_reg + arbase_offset;
+assign arbase_data_gen_c = arbase_data_reg + arbase_offset_c;
 assign arsize_data_gen_c = data_width_reg;
 
 (* use_dsp = "yes" *) wire [31:0] awbase_offset_c;
 assign awbase_offset_c = output_addr_cnt * (data_width_reg << 6);
-assign awbase_gen_c = awbase_dout_reg + awbase_offset;
+assign awbase_gen_c = awbase_dout_reg + awbase_offset_c;
 assign awsize_gen_c = data_width_reg;
 
 assign dout_rs = rd_indices ? 512'd0 : din;
