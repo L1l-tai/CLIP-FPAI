@@ -1,6 +1,6 @@
 # Hadamard 变换模块 RTL 分析报告
 
-**日期：** 2026-05-14（更新于 2026-05-15）  
+**日期：** 2026-05-14（更新于 2026-06-16）  
 **分析范围：** `rtl/custom_op/hadamard/` 全部 RTL 文件  
 
 ---
@@ -425,3 +425,70 @@ assign exp_b = cal_percision ? op_b[FP16_MW +: EXP_W] : 5'd0;
 ### 11.5 输出截断
 
 `hadamard.v` 的 `dout_int8` 取 `fwht_out_regs[i][7:0]`——即 INT16 结果的低 8 位。对于 CLIP ViT 的实际特征分布，FWHT 系数自然落在 INT8 范围 `[-128, 127]` 内。极端溢出的值 wraparound（取模 256），发生概率极低。
+
+---
+
+## 十二、硬件适配修改（2026-06-16）
+
+### 12.1 输出路径简化
+
+**问题**：原 `out_phase` 状态机（IDLE→LO→GAP→HI→IDLE）实现过于复杂，在真实硬件上产生数据错位。
+
+**修复**：移除 out_phase FSM，改为 `result_valid + wr_cnt` 控制：
+```verilog
+assign dout_rs = cal_percision ? (wr_cnt == 2'd0 ? dout_lo : dout_hi) : dout_int8;
+assign dout_valid_rs = result_valid && trans_status[1];
+assign fwht_done = result_valid;
+```
+
+保留 `avr_rs`（2 级 AVR），`wr_cnt` 直接计数 `dout_valid & dout_ready` 握手。`result_valid` 由 FWHT 计算完成置位，DMA `wr_done` 清零。
+
+### 12.2 rd_data_ready：读数据就绪检测
+
+**问题**：原 FSM 仅根据 `rd_done`（AR 握手完成）跳转状态，真实 DDR 有 READ_LATENCY，AR 完成后 R 数据尚未到达。
+
+**修复**：新增 `rd_cnt` 计数器，每拍 `din_valid & din_ready` 握手计数：
+```verilog
+assign rd_data_ready = (rd_cnt >= rd_expected);  // FP16: ≥2, INT8: ≥1
+```
+
+FSM 读状态转换添加 `rd_data_ready` 检查：
+```
+RD_ONLY:    rd_done_reg && rd_data_ready → FWHT
+WR_PIPLINE: rd_done_reg && wr_done_reg && rd_data_ready → FWHT
+```
+
+### 12.3 2-FF CDC 同步
+
+`hadamard_addr_gen.v` 新增 `arbase_hd`/`awbase_hd` 的 2-FF 同步器（`_s1 → _s2`），解决 `ra_clk` → `clk` 跨时钟域配置寄存器稳定性问题。
+
+### 12.4 wr_cnt / rd_cnt 计数简化
+
+**问题**：原武装-解除机制依赖 `~din_valid` / `~dout_valid` 重装，真实硬件上 valid 持续为高（AXI burst）导致重装失败，计数停止。
+
+**修复**：直接计数 `din_valid & din_ready` / `dout_valid & dout_ready` 每拍握手，不加武装机制：
+```verilog
+// rd_cnt: 每拍握手计数
+if (din_valid & din_ready) rd_cnt <= rd_cnt + 2'd1;
+
+// wr_cnt: 每拍握手计数
+if (dout_valid & dout_ready) wr_cnt <= wr_cnt + 2'd1;
+```
+
+### 12.5 fwht_done 信号
+
+`fwht_done = result_valid`，FWHT 计算完成就通知 FSM。**注意**：不能改为 `dout_valid && result_valid`——在 FWHT 状态下 `trans_status[1] = 0` → `dout_valid_rs = 0` → `dout_valid = 0` → 死锁。
+
+### 12.6 仿真 DDR 模型
+
+`sim/hadamard_sim.sv` 更新为 R 队列 + burst 模式：`rvalid` 跨 beat 保持高电平，AR 支持 outstanding reads（4 深队列），`READ_LATENCY = 4`。
+
+### 12.7 寄存器映射
+
+| 功能 | 寄存器索引 | 字节偏移 |
+|------|-----------|---------|
+| Hadamard 启动 | 0x31 | 0xC4 |
+| Hadamard 完成 | 0x40 | 0x100 |
+| FSM 状态调试 | 0x23 | 0x8C |
+| 数据宽度 | 0x07 | 0x1C |
+| 计算精度 | 0x08 | 0x20 |

@@ -96,6 +96,7 @@ module customop_top(
     wire [31:0]       indices_width;
     wire [31:0]       data_width;
     wire              din_ready;
+    wire              rd_data_ready_gather;  // 索引数据全部到达
 
     //Hadamard signals
     wire              comp_start_hd;
@@ -191,6 +192,9 @@ module customop_top(
     wire              fifo_empty_rs;
     wire              src_done_rs;
     wire              fifo_drain_rs;
+    wire              clr_dbeat_1_rs;
+    wire              rd_data_ready_rs_0; // 第一行读数据到达
+    wire              rd_data_ready_rs_1; // 第二行读数据到达
 
     //Arbiter signals
     wire [31:0]       arb_arbase_gather;
@@ -330,7 +334,8 @@ module customop_top(
        .rd_done          ( arb_rd_done_gather ), // input - from arbiter
        .wr_done          ( arb_wr_done_gather ), // input - from arbiter
        .comp_start       ( comp_start_cross ), // input
-       
+       .rd_data_ready    ( rd_data_ready_gather ), // input - from gather core
+
        .arbase_incdces   ( arbase_incdces   ), // input
        .arsize_incdces   ( arsize_incdces   ), // input
        .arbase_data_gen  ( arbase_data_gen  ), // input
@@ -461,6 +466,7 @@ module customop_top(
         .rd_indices      ( rd_indices       ),
         .trans_data      ( trans_data       ),
         .gen_status      ( gen_status       ),
+        .indices_beats   ( arsize_incdces   ),
         .indices_width   ( indices_width    ),
         .data_width      ( data_width       ),
 
@@ -483,6 +489,8 @@ module customop_top(
         .dout            ( comp_data        ),
         .dout_valid      ( data_valid       ),
         .dout_ready      ( data_ready       ),
+
+        .rd_data_ready   ( rd_data_ready_gather ),
 
         //.arsize          ( arsize           ),
         .comp_done       ( comp_done        ),
@@ -670,6 +678,8 @@ module customop_top(
       .resize_done      ( rs_resize_done    ), // input - from resize core
       .axis_done        ( axis_done_axis     ), // input - from resize_axis
       .axis_pre_cal_done( axis_pre_cal_done_axis ), // input - from resize_axis
+      .rd_data_ready_0  ( rd_data_ready_rs_0 ), // input - from resize core
+      .rd_data_ready_1  ( rd_data_ready_rs_1 ), // input - from resize core
 
       .arbase           ( arbase_rs_fsm    ), // output
       .arsize           ( arsize_rs_fsm    ), // output
@@ -678,6 +688,7 @@ module customop_top(
       .rd_start         ( rd_start_rs       ), // output
       .wr_start         ( wr_start_rs       ), // output
       .rd_second        ( rd_second_rs      ), // output
+      .clr_dbeat_1      ( clr_dbeat_1_rs   ), // output
       .comp_done        ( comp_done_rs      ), // output
       .trans_status     ( trans_status_rs   ), // output [1:0]
       .gen_status       ( gen_status_rs     ), // output
@@ -770,6 +781,8 @@ module customop_top(
       .x_delta         ( x_delta_axis      ), // input [255:0]
       .y_delta         ( y_delta_axis      ), // input [7:0]
 
+      .arsize_input    ( arsize_rs_gen     ), // input [15:0] - 当前行的期望beat数
+
       .din             ( itf_rdata         ), // input [511:0] - 直接连接DMA读数据
       .din_valid       ( itf_rvalid        ), // input
       .din_ready       ( rs_din_ready      ), // output
@@ -780,7 +793,10 @@ module customop_top(
 
       .comp_done       ( comp_done_rs      ), // input
       .resize_done     ( rs_resize_done    ), // output
+      .rd_data_ready_0 ( rd_data_ready_rs_0 ), // output
+      .rd_data_ready_1 ( rd_data_ready_rs_1 ), // output
 
+      .clr_dbeat_1      ( clr_dbeat_1_rs     ), // input
       .fifo_flush_ready ( fifo_flush_ready_rs ),
       .fifo_empty       ( fifo_empty_rs       ),
       .fifo_drain       ( fifo_drain_rs       ),

@@ -32,7 +32,36 @@ module resize_sim;
     wire itf_rready;
     wire reset_reg;
     wire rs_comp_done;
+    reg  [31:0] itf_ra_araddr;
     assign rs_comp_done = U_customop_top.comp_done_rs;
+
+    // 诊断 RD_SECONE 持续时间
+    wire [3:0]  rs_fsm_state = U_customop_top.U_resize_fsm.state;
+    wire        rs_rd_second = U_customop_top.U_resize_fsm.rd_second;
+    wire        rs_rd_done_reg;
+    wire        rs_rd_ready_0;
+    wire        rs_rd_ready_1;
+    wire [15:0] rs_dbeat_0;
+    wire [15:0] rs_dbeat_1;
+    assign rs_rd_done_reg = U_customop_top.U_resize_fsm.rd_done_reg;
+    assign rs_rd_ready_0  = U_customop_top.rd_data_ready_rs_0;
+    assign rs_rd_ready_1  = U_customop_top.rd_data_ready_rs_1;
+    assign rs_dbeat_0     = U_customop_top.U_resize.dbeat_cnt_0;
+    assign rs_dbeat_1     = U_customop_top.U_resize.dbeat_cnt_1;
+
+    reg [3:0] rs_state_r;
+    always @(posedge clk) rs_state_r <= rs_fsm_state;
+    wire rs_enter_rd_secone = (rs_fsm_state == 4'd5) && (rs_state_r != 4'd5);
+
+    always @(posedge clk) begin
+        if (rs_enter_rd_secone)
+            $display("TB: *** ENTER RD_SECONE: dbeat_0=%d dbeat_1=%d rd_ready0=%b rd_ready1=%b rd_done_reg=%b ***",
+                     rs_dbeat_0, rs_dbeat_1, rs_rd_ready_0, rs_rd_ready_1, rs_rd_done_reg);
+        if (rs_fsm_state == 4'd5 && rs_state_r != 4'd5)
+            ;  // already printed above
+        else if (rs_fsm_state == 4'd5 && rs_rd_ready_1)
+            $display("TB: *** RD_SECONE rd_ready_1=1, about to leave: dbeat_1=%d ***", rs_dbeat_1);
+    end
 
     customop_top U_customop_top (
         .itf_ra_awaddr(itf_ra_awaddr), .itf_ra_awdata(itf_ra_awdata),
@@ -61,7 +90,7 @@ module resize_sim;
     endfunction
 
     // ============================================================
-    // 真实 DDR AXI 内存模型
+    // 真实 AXI DDR 模型 (对齐硬件验证行为)
     // ============================================================
     localparam READ_LATENCY = 4;
     localparam R_QUEUE_DEPTH = 4;
@@ -70,61 +99,73 @@ module resize_sim;
     reg         r_queue_valid [0:R_QUEUE_DEPTH-1];
     integer     r_queue_wr_ptr, r_queue_rd_ptr, r_queue_cnt;
 
+    // AR: 脉冲 ready + 队列入队
     always @(posedge clk) begin
         if (!rst_n) begin
-            itf_arready <= 1'b1; r_queue_wr_ptr <= 0; r_queue_cnt <= 0;
+            itf_arready <= 1'b0; r_queue_wr_ptr <= 0; r_queue_cnt <= 0;
             for (int q = 0; q < R_QUEUE_DEPTH; q++) r_queue_valid[q] <= 1'b0;
         end else begin
-            itf_arready <= (r_queue_cnt < R_QUEUE_DEPTH);
+            if (itf_arvalid && !itf_arready && r_queue_cnt < R_QUEUE_DEPTH)
+                itf_arready <= 1'b1;
+            else
+                itf_arready <= 1'b0;
+
             if (itf_arvalid && itf_arready) begin
                 r_queue_addr[r_queue_wr_ptr]  <= itf_araddr;
                 r_queue_timer[r_queue_wr_ptr] <= READ_LATENCY;
                 r_queue_valid[r_queue_wr_ptr] <= 1'b1;
                 r_queue_wr_ptr <= (r_queue_wr_ptr + 1) % R_QUEUE_DEPTH;
                 r_queue_cnt   <= r_queue_cnt + 1;
+                $display("TB: AR Addr=0x%08X (q=%d)", itf_araddr, r_queue_cnt);
             end
         end
     end
 
-    reg r_data_pending;
+    // R: burst 模式, rvalid 跨 beat 保持高
     always @(posedge clk) begin
         if (!rst_n) begin
-            itf_rvalid <= 1'b0; itf_rdata <= 512'd0;
-            r_queue_rd_ptr <= 0; r_data_pending <= 1'b0;
+            itf_rvalid <= 1'b0; itf_rdata <= 512'd0; r_queue_rd_ptr <= 0;
         end else begin
-            itf_rvalid <= 1'b0;
-            if (r_data_pending) begin
-                itf_rdata  <= mem[get_mem_index(r_queue_addr[r_queue_rd_ptr])];
-                itf_rvalid <= 1'b1;
-                if (itf_rready) begin
-                    r_queue_valid[r_queue_rd_ptr] <= 1'b0;
-                    r_queue_rd_ptr <= (r_queue_rd_ptr + 1) % R_QUEUE_DEPTH;
-                    r_queue_cnt   <= r_queue_cnt - 1;
-                    r_data_pending <= 1'b0;
-                end
-            end else if (r_queue_cnt > 0 && r_queue_valid[r_queue_rd_ptr]) begin
+            if (r_queue_cnt > 0 && r_queue_valid[r_queue_rd_ptr]) begin
                 if (r_queue_timer[r_queue_rd_ptr] > 0) begin
                     r_queue_timer[r_queue_rd_ptr] <= r_queue_timer[r_queue_rd_ptr] - 1;
-                end else begin
+                    if (r_queue_timer[r_queue_rd_ptr] == 1)
+                        $display("TB: R timer expiring next cycle, addr=0x%08X rready=%b cnt=%d",
+                                 r_queue_addr[r_queue_rd_ptr], itf_rready, r_queue_cnt);
+                end
+                else begin
                     itf_rdata  <= mem[get_mem_index(r_queue_addr[r_queue_rd_ptr])];
                     itf_rvalid <= 1'b1;
-                    r_data_pending <= 1'b1;
+                    $display("TB: R data presented addr=0x%08X rready=%b",
+                             r_queue_addr[r_queue_rd_ptr], itf_rready);
                 end
+            end else begin
+                if (r_queue_cnt == 0)
+                    itf_rvalid <= 1'b0;
+                else if (!r_queue_valid[r_queue_rd_ptr])
+                    $display("TB: R queue entry INVALID rd_ptr=%d cnt=%d", r_queue_rd_ptr, r_queue_cnt);
+            end
+
+            if (itf_rvalid && itf_rready && r_queue_cnt > 0) begin
+                r_queue_valid[r_queue_rd_ptr] <= 1'b0;
+                r_queue_rd_ptr <= (r_queue_rd_ptr + 1) % R_QUEUE_DEPTH;
+                r_queue_cnt   <= r_queue_cnt - 1;
             end
         end
     end
 
+    // AW: 脉冲式 ready
     always @(posedge clk) begin
         if (!rst_n) begin
-            itf_awready <= 1'b1; write_pending <= 1'b0; pending_waddr <= 32'd0;
+            itf_awready <= 1'b0;
         end else begin
-            itf_awready <= 1'b1;
+            if (itf_awvalid && !itf_awready)
+                itf_awready <= 1'b1;
+            else
+                itf_awready <= 1'b0;
+
             if (itf_awvalid && itf_awready) begin
-                pending_waddr <= itf_awaddr; write_pending <= 1'b1;
-            end
-            if (write_pending) begin
-                mem[get_mem_index(pending_waddr)] <= itf_awdata;
-                write_pending <= 1'b0;
+                mem[get_mem_index(itf_awaddr)] <= itf_awdata;
             end
         end
     end

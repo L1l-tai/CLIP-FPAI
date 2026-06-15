@@ -1,8 +1,7 @@
 # Gather 算子 RTL 分析报告
 
-**日期：** 2026-05-15  
-**分析范围：** `rtl/custom_op/gather/` 全部 RTL 文件  
-**分析人：** Claude Code (Normalcy_Lin session)
+**日期：** 2026-05-15（更新于 2026-06-16）  
+**分析范围：** `rtl/custom_op/gather/` 全部 RTL 文件
 
 ---
 
@@ -195,3 +194,39 @@ Gather 特有的信号：
 - `rd_indices`：索引读取阶段使能（Hadamard/Resize 无此阶段）
 - `trans_data`：数据传输阶段使能
 - `indices_width` / `data_width`：Gather 专用配置寄存器
+
+---
+
+## 九、硬件适配修改（2026-06-16）
+
+### 9.1 rd_data_ready：索引数据就绪检测
+
+**问题**：原 FSM 在 `RD_INDICES → R_INDICES_DONE` 时仅检查 `rd_done_reg`（AR 握手完成），未确认 R 数据已到达索引 FIFO。
+
+**修复**：新增 `rd_data_ready` 输出，`rd_cnt` 计数 `din_valid & din_ready` 握手：
+```verilog
+assign rd_data_ready = (rd_cnt >= indices_beats);
+```
+FSM 转换改为：`RD_INDICES: rd_done_reg && rd_data_ready → R_INDICES_DONE`。
+
+### 9.2 地址计算流水线修正
+
+**问题**：`arbase_offset` 和 `arbase_data_gen` 在同一 `gen_status` 周期用非阻塞赋值更新，导致 `arbase_data_gen` 使用旧 offset。
+
+**修复**：新增 `gen_status_r` 寄存器，`arbase_data_gen`/`awbase_gen`/`addr_gen_valid` 推迟到 `gen_status && gen_status_r` 才更新，给 offset 留出 1 拍更新时间。
+
+### 9.3 rd_cnt 计数简化
+
+同 hadamard：直接每拍 `din_valid & din_ready` 握手计数，不加武装机制。
+
+### 9.4 2-FF CDC 同步
+
+`arbase_data`/`awbase_dout` 新增 2-FF 同步器（`_s1 → _reg`），解决 `ra_clk` → `clk` 跨时钟域。
+
+### 9.5 寄存器映射
+
+| 功能 | 寄存器索引 | 字节偏移 |
+|------|-----------|---------|
+| Gather 启动 | 0x00 | 0x00 |
+| Gather 完成 | 0x20 | 0x80 |
+| FSM 状态调试 | 0x22 | 0x88 |

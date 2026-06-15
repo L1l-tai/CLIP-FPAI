@@ -185,101 +185,77 @@ module hadamard_sim;
     endtask
 
     // ============================================================
-    // 真实 DDR 行为 AXI 内存模型
-    // - 读延迟 READ_LATENCY 周期
-    // - 支持流水线读 (多个 outstanding AR)
-    // - 写延迟 1 周期
-    // - 无硬编码事务计数限制
+    // 真实 AXI DDR 模型 (对齐硬件验证行为)
+    // - AR: 脉冲式 ready + r_busy 串行化 (一次AR→一次R握手完成后才接受下一个)
+    // - R:  AR握手后 READ_LATENCY 拍延迟, r_busy 在R握手后释放
+    // - AW: 脉冲式 ready, 由 valid 唤醒
     // ============================================================
-    localparam READ_LATENCY = 4;   // DDR 读延迟 (可调)
+    localparam READ_LATENCY = 4;
+    reg         r_busy;
+    reg [31:0]  pending_ar_addr;
+    reg [7:0]   r_latency_cnt;
 
-    // 读请求队列 (支持深度为 4 的 outstanding reads)
-    localparam R_QUEUE_DEPTH = 4;
-    reg [31:0]  r_queue_addr  [0:R_QUEUE_DEPTH-1];
-    reg [7:0]   r_queue_timer [0:R_QUEUE_DEPTH-1];
-    reg         r_queue_valid [0:R_QUEUE_DEPTH-1];
-    integer     r_queue_wr_ptr, r_queue_rd_ptr, r_queue_cnt;
-
-    // 写节拍计数 (跟踪突发内节拍数)
-    // ---- 读地址通道: 接受 AR, 入队 ----
+    // ---- 读地址通道: 脉冲 ready + r_busy 串行化 ----
     always @(posedge clk) begin
         if (!rst_n) begin
-            itf_arready <= 1'b1;  // 默认 ready
-            r_queue_wr_ptr <= 0;
-            r_queue_cnt   <= 0;
-            for (int q = 0; q < R_QUEUE_DEPTH; q++) begin
-                r_queue_valid[q] <= 1'b0;
-            end
+            itf_arready <= 1'b0;
+            r_busy      <= 1'b0;
         end else begin
-            // 背压: 队列满时 deassert arready
-            itf_arready <= (r_queue_cnt < R_QUEUE_DEPTH) ? 1'b1 : 1'b0;
+            if (itf_arvalid && !itf_arready && !r_busy)
+                itf_arready <= 1'b1;
+            else
+                itf_arready <= 1'b0;
 
-            // AR 握手: 入队
             if (itf_arvalid && itf_arready) begin
-                r_queue_addr[r_queue_wr_ptr]  <= itf_araddr;
-                r_queue_timer[r_queue_wr_ptr] <= READ_LATENCY;
-                r_queue_valid[r_queue_wr_ptr] <= 1'b1;
-                r_queue_wr_ptr <= (r_queue_wr_ptr + 1) % R_QUEUE_DEPTH;
-                r_queue_cnt   <= r_queue_cnt + 1;
-                $display("TB: AR accepted Addr=0x%08X (queue depth=%d)",
-                         itf_araddr, r_queue_cnt + 1);
+                pending_ar_addr <= itf_araddr;
+                r_busy <= 1'b1;
+                $display("TB: AR Addr=0x%08X", itf_araddr);
             end
         end
     end
 
-    // ---- 读数据通道: 延迟后返回 (r_valid 只维持到握手) ----
-    reg r_data_pending;
+    // ---- 读数据通道: 延迟后返回, r_busy 在 R 握手完成后释放 ----
     always @(posedge clk) begin
         if (!rst_n) begin
-            itf_rvalid <= 1'b0; itf_rdata <= 512'd0;
-            r_queue_rd_ptr <= 0; r_data_pending <= 1'b0;
+            itf_rvalid     <= 1'b0;
+            itf_rdata      <= 512'd0;
+            r_latency_cnt  <= 0;
         end else begin
-            itf_rvalid <= 1'b0;
-            if (r_data_pending) begin
-                itf_rdata  <= mem[get_mem_index(r_queue_addr[r_queue_rd_ptr])];
-                itf_rvalid <= 1'b1;
-                if (itf_rready) begin
-                    r_queue_valid[r_queue_rd_ptr] <= 1'b0;
-                    r_queue_rd_ptr <= (r_queue_rd_ptr + 1) % R_QUEUE_DEPTH;
-                    r_queue_cnt   <= r_queue_cnt - 1;
-                    r_data_pending <= 1'b0;
-                end
-            end else if (r_queue_cnt > 0 && r_queue_valid[r_queue_rd_ptr]) begin
-                if (r_queue_timer[r_queue_rd_ptr] > 0) begin
-                    r_queue_timer[r_queue_rd_ptr] <= r_queue_timer[r_queue_rd_ptr] - 1;
-                end else begin
-                    itf_rdata  <= mem[get_mem_index(r_queue_addr[r_queue_rd_ptr])];
+            if (itf_rvalid && itf_rready && r_queue_cnt > 0) begin
+                itf_rvalid    <= 1'b0;
+                r_busy        <= 1'b0;
+                r_latency_cnt <= 0;
+                $display("TB: R handshake Addr=0x%08X", pending_ar_addr);
+            end
+
+            if (r_busy && !itf_rvalid) begin
+                if (r_latency_cnt < READ_LATENCY)
+                    r_latency_cnt <= r_latency_cnt + 1'b1;
+                else begin
+                    itf_rdata  <= mem[get_mem_index(pending_ar_addr)];
                     itf_rvalid <= 1'b1;
-                    r_data_pending <= 1'b1;
                     $display("TB: R data Addr=0x%08X first16=0x%04X",
-                             r_queue_addr[r_queue_rd_ptr],
-                             mem[get_mem_index(r_queue_addr[r_queue_rd_ptr])][15:0]);
+                             pending_ar_addr,
+                             mem[get_mem_index(pending_ar_addr)][15:0]);
                 end
             end
         end
     end
 
-    // ---- 写通道: 模拟真实 DDR 写入延迟, 每 beat 后拉低 awready ----
-    // ---- 写通道: 模拟 AXI 互联 wait state, 每 beat 后拉低 awready ----
-    localparam WRITE_LATENCY = 2;
-    reg [7:0] w_timer;
+    // ---- 写通道: 脉冲式 ready ----
     always @(posedge clk) begin
         if (!rst_n) begin
-            itf_awready <= 1'b1;
-            w_timer     <= 0;
+            itf_awready <= 1'b0;
         end else begin
-            if (w_timer > 0) begin
+            if (itf_awvalid && !itf_awready)
+                itf_awready <= 1'b1;
+            else
                 itf_awready <= 1'b0;
-                w_timer <= w_timer - 1;
-            end 
-            else if (itf_awvalid && itf_awready) begin
+
+            if (itf_awvalid && itf_awready) begin
                 mem[get_mem_index(itf_awaddr)] <= itf_awdata;
-                w_timer <= WRITE_LATENCY;
                 $display("TB: Wrote Addr=0x%08X data[15:0]=0x%04X",
                          itf_awaddr, itf_awdata[15:0]);
-            end
-            else begin
-                itf_awready <= 1'b1;
             end
         end
     end

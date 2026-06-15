@@ -13,6 +13,7 @@ module gather_fsm (
     input               rd_done,
     input               wr_done,
     input               comp_start,
+    input               rd_data_ready,    // 索引数据全部到达
 
     // 只需要对读地址进行仲裁
     input [15:0]        arbase_incdces,
@@ -178,7 +179,7 @@ always @(*) begin
             end
         end
         RD_INDICES: begin
-            if (rd_done_reg) begin
+            if (rd_done_reg && rd_data_ready) begin
                 next_state = R_INDICES_DONE;
             end
         end

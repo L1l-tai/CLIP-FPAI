@@ -3,6 +3,7 @@
 #include "fps_calculator.hpp"
 #include "vis_helper.hpp"
 #include "icraft_utils.hpp"
+#include "mem_file_utils.hpp"
 // icraft includes
 #include <icraft-xrt/core/session.h>
 #include "compile_fpai_target.hpp"
@@ -15,6 +16,10 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <thread>
+#include <chrono>
+#include <ctime>
+#include <cstring>
 
 using namespace icraft::xrt;
 using namespace icraft::xir;
@@ -23,170 +28,292 @@ using namespace std::chrono_literals;
 namespace fs = std::filesystem;
 using namespace fpai;
 
-// Hadamard 寄存器地址 (对应 reg_ctrl.v 中的定义)
-// 16'h31: HD_COMP_START_ADDR
-// 16'h32: HD_RBASE_ADDR
-// 16'h33: HD_WBASE_ADDR
-// 16'h34: HD_WRSIZE_ADDR
-// 16'h40: HD_COMP_DONE_ADDR
-// 16'h07: rfu_wreg2 (hd_data_width)
-// 16'h08: rfu_wreg3 (hd_cal_percision)
+// ============================================================
+// FSM 状态位域解析 (from customop_top.v dbg2_s2)
+// [11:9]  hadamard_state[2:0]
+// [8]     gen_status_hd
+// [7]     fwht_status_hd
+// [6:5]   trans_status_hd[1:0]
+// [4]     rd_start_hd
+// [3]     wr_start_hd
+// [2]     arb_rd_done_hd
+// [1]     arb_wr_done_hd
+// [0]     comp_done_hd
+// ============================================================
+static const char* hadamard_state_name(uint32_t state) {
+    switch (state & 0x7) {
+        case 0: return "IDLE";
+        case 1: return "GEN_ADDR";
+        case 2: return "RD_ONLY";
+        case 3: return "FWHT";
+        case 4: return "WR_PIPLINE";
+        case 5: return "WR_ONLY";
+        case 6: return "COMP_DONE";
+        default: return "UNKNOWN";
+    }
+}
+
+static void print_hadamard_fsm(uint32_t dbg) {
+    uint32_t state = (dbg >> 9) & 0x7;
+    std::cout << "  [FSM] state=" << hadamard_state_name(state)
+              << " gen=" << ((dbg >> 8) & 1)
+              << " fwht=" << ((dbg >> 7) & 1)
+              << " trans=" << ((dbg >> 5) & 3)
+              << " rd_st=" << ((dbg >> 4) & 1)
+              << " wr_st=" << ((dbg >> 3) & 1)
+              << " rd_done=" << ((dbg >> 2) & 1)
+              << " wr_done=" << ((dbg >> 1) & 1)
+              << " comp=" << (dbg & 1) << std::endl;
+}
+
+static void print_cdc_overview(uint32_t dbg) {
+    std::cout << "  [CDC] rst=" << (dbg & 1)
+              << " comp_start=" << ((dbg >> 4) & 1)
+              << " comp_done=" << ((dbg >> 6) & 1)
+              << " hd_start=" << ((dbg >> 8) & 1)
+              << " hd_done=" << ((dbg >> 10) & 1) << std::endl;
+}
 
 int main(int argc, char *argv[])
 {
-    // FPAI设备初始化
     std::string device_url = "axi://zg330aiu?npu=0x40000000&dma=0x80000000";
     auto device = Device::Open(device_url.c_str());
     auto fpai_device = device.cast<FPAIDevice>();
 
-    // Hadamard 寄存器基地址 (与 Gather 不同的地址偏移)
     uint32_t reg_base = 0x400C0000;
 
-    // 读取 Hadamard 版本寄存器 (0x40)
-    uint32_t version = fpai_device.defaultRegRegion().read(reg_base + 0x40, false);
-    std::cout << "Hadamard version is " << std::hex << "0x" << version << std::dec << std::endl;
+    // -------- 寄存器地址 (reg_ctrl 索引 × 4) --------
+    uint32_t REG_START       = reg_base + 0xC4;   // 0x31 HD_COMP_START_ADDR
+    uint32_t REG_DONE        = reg_base + 0x100;  // 0x40 HD_COMP_DONE_ADDR
+    uint32_t REG_VERSION     = reg_base + 0x180;  // 0x60
+    uint32_t REG_RESET       = reg_base + 0x1DC;  // 0x77
+    uint32_t REG_DATA_WIDTH  = reg_base + 0x1C;   // 0x07 RFU_WADDR2
+    uint32_t REG_PRECISION   = reg_base + 0x20;   // 0x08 RFU_WADDR3
+    uint32_t REG_RBASE       = reg_base + 0xC8;   // 0x32
+    uint32_t REG_WBASE       = reg_base + 0xCC;   // 0x33
+    uint32_t REG_WRSIZE      = reg_base + 0xD0;   // 0x34
+    uint32_t REG_DBG_CDC     = reg_base + 0x84;   // 0x21 RFU_RADDR0
+    uint32_t REG_DBG_HD_FSM  = reg_base + 0x8C;   // 0x23 RFU_RADDR2
 
-    // *******************************************
-    // @ Hadamard 算子参数配置
-    // *******************************************
-    // 与 hadamard_sim.sv / hadamard_int8_sim.sv 中的参数保持一致
+    uint32_t version = fpai_device.defaultRegRegion().read(REG_VERSION, false);
+    std::cout << "Hadamard version is 0x" << std::hex << version << std::dec << std::endl;
 
-    // 数据精度: 0 = INT8, 1 = FP16
-    const int FP16_MODE = 1;  // 选择 FP16 模式
-    const int INT8_MODE = 0;
+    // ============================================================
+    // 从 test/input-data/ 加载 FP16 测试数据
+    // ============================================================
+    const int TOTAL_BLOCKS = 8;
+    const int CAL_PRECISION = 1;       // FP16
 
-    // 每次迭代处理的512bit数据块数量 (hd_data_width)
-    const int HD_DATA_WIDTH = 2;
-
-    // 内存地址定义
-    const uint32_t SRC_BASE_ADDR = 0x2000;    // 源数据存储地址
-    const uint32_t DST_BASE_ADDR = 0x10000;   // 目的数据存储地址
-
-    // 数据块数量
-    const int TOTAL_BLOCKS = 8;  // 8个512bit数据块
-
-    // 计算内存大小
-    // 每个块 64 bytes (512 bits)
     int src_data_size = TOTAL_BLOCKS * 64;   // 512 bytes
     int dst_data_size = TOTAL_BLOCKS * 64;   // 512 bytes
-    int total_size = src_data_size + dst_data_size;
 
-    // 分配内存
-    std::shared_ptr<int8_t[]> src_data = std::shared_ptr<int8_t[]>(new int8_t[src_data_size]{ 0 });
-    std::shared_ptr<int8_t[]> dst_data = std::shared_ptr<int8_t[]>(new int8_t[dst_data_size]{ 0 });
+    // 用 padding 检测 DMA 是否写到区域外
+    const int PAD_BLOCKS = 8;
+    int pad_size = PAD_BLOCKS * 64;
 
-    // 在FPGA内存中分配空间
+    int src_offset = 0;
+    int dst_offset = src_data_size + pad_size;
+    int total_size = src_data_size + pad_size + dst_data_size + pad_size;
+
+    std::shared_ptr<int8_t[]> src_buf(new int8_t[src_data_size]{0});
+    int loaded = read_mem_file("test/input-data/fwht-input-fp16.mem", src_buf.get(), src_data_size);
+    if (loaded < 0 || loaded < src_data_size) {
+        std::cout << "Error: failed to load fwht-input-fp16.mem (loaded=" << loaded << ")" << std::endl;
+        return -1;
+    }
+    std::cout << "Loaded " << loaded << " bytes from fwht-input-fp16.mem" << std::endl;
+
     auto mem_chunk = fpai_device.defaultMemRegion().malloc(total_size, 0, 64);
     uint32_t mem_addr = mem_chunk->begin.addr();
     std::cout << "PL-DDR base addr: 0x" << std::hex << mem_addr << std::dec << std::endl;
 
-    // 计算实际存储地址
-    uint32_t src_addr = mem_addr + SRC_BASE_ADDR;
-    uint32_t dst_addr = mem_addr + DST_BASE_ADDR;
+    uint32_t src_addr = mem_addr + src_offset;
+    uint32_t dst_addr = mem_addr + dst_offset;
+    std::cout << "Source addr: 0x" << std::hex << src_addr << std::dec << std::endl;
+    std::cout << "Dest   addr: 0x" << std::hex << dst_addr << std::dec << std::endl;
 
-    std::cout << "Source data base addr: 0x" << std::hex << src_addr << std::dec << std::endl;
-    std::cout << "Dest data base addr: 0x" << std::hex << dst_addr << std::dec << std::endl;
+    // ============================================================
+    // 复位 FPGA 逻辑
+    // ============================================================
+    std::cout << "\n=== Resetting FPGA logic ===" << std::endl;
+    fpai_device.defaultRegRegion().write(REG_RESET, 1, false);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    fpai_device.defaultRegRegion().write(REG_RESET, 0, false);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    std::cout << "  Reset complete" << std::endl;
 
-    // *******************************************
-    // @ 准备源数据 (FP16 模式)
-    // *******************************************
-    std::cout << "\n=== Loading Source Data (FP16 Mode) ===" << std::endl;
-
-    if (FP16_MODE) {
-        // FP16 模式: 每个512bit块包含32个FP16数据 (每个16bit)
-        // 数据生成: 1, 2, 3, ... 64 (分8个块，每块32个FP16)
-        for (int i = 0; i < TOTAL_BLOCKS; i++) {
-            for (int j = 0; j < 32; j++) {
-                // 生成简单的测试数据
-                uint16_t fp16_val = (i * 32 + j + 1) & 0xFFFF;
-                int byte_offset = i * 64 + (j / 2) * 4;
-                int bit_offset = (j % 2) * 16;
-                ((uint16_t*)((char*)src_data.get() + byte_offset))[0] |=
-                    (fp16_val << bit_offset);
-            }
-            std::cout << "Block[" << i << "]: first=" << std::hex
-                      << ((uint16_t*)((char*)src_data.get() + i * 64))[0] << std::dec << std::endl;
+    // ============================================================
+    // 全部区域填入已知递增模式
+    // ============================================================
+    std::cout << "\n=== Pre-filling entire region with known pattern ===" << std::endl;
+    {
+        std::vector<int8_t> prefill(total_size);
+        for (int i = 0; i < total_size; i++) {
+            prefill[i] = (int8_t)(i & 0xFF);
         }
-    } else {
-        // INT8 模式: 每个512bit块包含64个INT8数据
-        // 数据生成: 交替正负数
-        for (int i = 0; i < TOTAL_BLOCKS; i++) {
-            for (int j = 0; j < 64; j++) {
-                int8_t val;
-                if (j % 2 == 0) {
-                    val = (j / 2 + 1 + i * 2);  // 正数
-                } else {
-                    val = -(j / 2 + 1 + i * 2);  // 负数
-                }
-                ((int8_t*)src_data.get())[i * 64 + j] = val;
-            }
-            std::cout << "Block[" << i << "]: first=" << std::hex
-                      << (int)((int8_t*)src_data.get())[i * 64] << std::dec << std::endl;
-        }
+        mem_chunk.write(0, (char*)prefill.data(), total_size);
     }
-    mem_chunk.write(SRC_BASE_ADDR, (char*)src_data.get(), src_data_size);
+    std::cout << "  All " << total_size << " bytes filled" << std::endl;
 
-    // *******************************************
-    // @ Hadamard 算子寄存器配置
-    // *******************************************
+    // 写入 src 数据
+    std::cout << "\n=== Writing src data (from fwht-input-fp16.mem) ===" << std::endl;
+    mem_chunk.write(src_offset, (char*)src_buf.get(), src_data_size);
+    std::cout << "  Wrote " << src_data_size << " bytes" << std::endl;
+
+    // ============================================================
+    // 启动前读取 CDC 状态
+    // ============================================================
+    std::cout << "\n=== Pre-start CDC status ===" << std::endl;
+    {
+        uint32_t cdc = fpai_device.defaultRegRegion().read(REG_DBG_CDC, false);
+        print_cdc_overview(cdc);
+    }
+
+    // ============================================================
+    // 寄存器配置
+    // ============================================================
     std::cout << "\n=== Configuring Hadamard Registers ===" << std::endl;
+    fpai_device.defaultRegRegion().write(REG_DATA_WIDTH, 2, false);
+    fpai_device.defaultRegRegion().write(REG_PRECISION, CAL_PRECISION, false);
+    fpai_device.defaultRegRegion().write(REG_RBASE, src_addr, false);
+    fpai_device.defaultRegRegion().write(REG_WBASE, dst_addr, false);
+    fpai_device.defaultRegRegion().write(REG_WRSIZE, TOTAL_BLOCKS, false);
+    std::cout << "  hd_data_width = 2" << std::endl;
+    std::cout << "  cal_percision = " << CAL_PRECISION << std::endl;
+    std::cout << "  rbase_hd = 0x" << std::hex << src_addr << std::dec << std::endl;
+    std::cout << "  wbase_hd = 0x" << std::hex << dst_addr << std::dec << std::endl;
+    std::cout << "  wrsize_hd = " << TOTAL_BLOCKS << std::endl;
 
-    // 1. rfu_wreg2 (Addr 0x07): hd_data_width - 每次迭代处理的数据块数量
-    fpai_device.defaultRegRegion().write(reg_base + 0x1C, HD_DATA_WIDTH, false);
-    std::cout << "Write rfu_wreg2 (hd_data_width): " << HD_DATA_WIDTH << std::endl;
-
-    // 2. rfu_wreg3 (Addr 0x08): hd_cal_percision - 0=INT8, 1=FP16
-    fpai_device.defaultRegRegion().write(reg_base + 0x20, FP16_MODE, false);
-    std::cout << "Write rfu_wreg3 (hd_cal_percision): " << FP16_MODE
-              << " (" << (FP16_MODE ? "FP16" : "INT8") << ")" << std::endl;
-
-    // 3. HD_RBASE_ADDR (Addr 0x32): 读基地址
-    fpai_device.defaultRegRegion().write(reg_base + 0xC8, src_addr, false);
-    std::cout << "Write HD_RBASE_ADDR: 0x" << std::hex << src_addr << std::dec << std::endl;
-
-    // 4. HD_WBASE_ADDR (Addr 0x33): 写基地址
-    fpai_device.defaultRegRegion().write(reg_base + 0xCC, dst_addr, false);
-    std::cout << "Write HD_WBASE_ADDR: 0x" << std::hex << dst_addr << std::dec << std::endl;
-
-    // 5. HD_WRSIZE_ADDR (Addr 0x34): 要处理的512bit数据块总数量
-    fpai_device.defaultRegRegion().write(reg_base + 0xD0, TOTAL_BLOCKS, false);
-    std::cout << "Write HD_WRSIZE_ADDR (total blocks): " << TOTAL_BLOCKS << std::endl;
-
-    // 6. 启动 Hadamard 计算 (HD_COMP_START_ADDR = 0x31)
-    fpai_device.defaultRegRegion().write(reg_base + 0xC4, 1, false);
+    // ============================================================
+    // 启动并轮询, 同时抓取 FSM 状态
+    // ============================================================
+    fpai_device.defaultRegRegion().write(REG_START, 1, false);
     std::cout << "\nHadamard started..." << std::endl;
 
-    // *******************************************
-    // @ 等待完成
-    // *******************************************
     auto start = std::chrono::system_clock::now();
     int done = 0;
-    int during = 0;
+    int poll_count = 0;
     while (done == 0) {
-        done = fpai_device.defaultRegRegion().read(reg_base + 0x100, false);
+        done = fpai_device.defaultRegRegion().read(REG_DONE, false);
+        poll_count++;
         auto end = std::chrono::system_clock::now();
-        during = (int)std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+        int during = (int)std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
+        // 每 100ms 打印一次 FSM 状态
+        if (poll_count % 10 == 0) {
+            uint32_t fsm = fpai_device.defaultRegRegion().read(REG_DBG_HD_FSM, false);
+            std::cout << "  [" << during << "ms] ";
+            print_hadamard_fsm(fsm);
+        }
+
         if (during > 10000) {
+            std::cout << "\n=== TIMEOUT! Dumping FSM state ===" << std::endl;
+            uint32_t fsm = fpai_device.defaultRegRegion().read(REG_DBG_HD_FSM, false);
+            uint32_t cdc = fpai_device.defaultRegRegion().read(REG_DBG_CDC, false);
+            std::cout << "  Poll count: " << poll_count << std::endl;
+            print_cdc_overview(cdc);
+            print_hadamard_fsm(fsm);
             std::cout << "Error: FPGA Time Out!" << std::endl;
             return -1;
         }
     }
-    std::cout << "Hadamard completed in " << during << "ms" << std::endl;
+    std::cout << "Hadamard completed in " << poll_count << " polls." << std::endl;
 
-    // *******************************************
-    // @ 读取输出数据并验证
-    // *******************************************
-    std::cout << "\n=== Reading Output Data ===" << std::endl;
-    mem_chunk.read((char*)dst_data.get(), DST_BASE_ADDR, dst_data_size);
-
-    std::cout << "Output (first 4 blocks):" << std::endl;
-    for (int i = 0; i < 4 && i < TOTAL_BLOCKS; i++) {
-        uint64_t val = ((uint64_t*)((char*)dst_data.get() + i * 64))[0];
-        std::cout << "Block[" << i << "]: 0x" << std::hex << val << std::dec
-                  << " (first 64 bits)" << std::endl;
+    // ============================================================
+    // 完成后读取 FSM 状态
+    // ============================================================
+    {
+        uint32_t fsm = fpai_device.defaultRegRegion().read(REG_DBG_HD_FSM, false);
+        std::cout << "Post-completion FSM: ";
+        print_hadamard_fsm(fsm);
     }
 
-    // 清理
-    Device::Close(device);
+    // ============================================================
+    // 读回全部区域，逐 block 检查
+    // ============================================================
+    std::cout << "\n=== Reading back entire region ===" << std::endl;
+    std::vector<int8_t> all_buf(total_size);
+    mem_chunk.read((char*)all_buf.data(), 0, total_size);
+
+    int total_blocks = total_size / 64;
+
+    std::cout << "\n=== Memory Write Detection (all " << total_blocks
+              << " blocks, 64B each) ===" << std::endl;
+    std::cout << "  Block  Offset     Region     Status" << std::endl;
+    std::cout << "  -----  --------   ---------  ------" << std::endl;
+
+    int written_before = 0, written_dst = 0, written_after = 0;
+    int first_written = -1, last_written = -1;
+
+    for (int b = 0; b < total_blocks; b++) {
+        int boff = b * 64;
+        bool modified = false;
+        for (int off = 0; off < 64; off++) {
+            if (all_buf[boff + off] != (int8_t)((boff + off) & 0xFF)) {
+                modified = true;
+                break;
+            }
+        }
+
+        const char* region;
+        if (boff < src_offset)                    region = "BEFORE_SRC";
+        else if (boff < src_offset + src_data_size) region = "SRC";
+        else if (boff < dst_offset)                region = "PAD(OK)";
+        else if (boff < dst_offset + dst_data_size) region = "DST";
+        else                                       region = "AFTER_DST";
+
+        if (modified) {
+            if (strcmp(region, "SRC") == 0 || strcmp(region, "PAD(OK)") == 0 || strcmp(region, "BEFORE_SRC") == 0) {
+                std::cout << "  [" << b << "]   0x" << std::hex << boff << std::dec
+                          << "  " << region << "  *** WRITTEN (unexpected!)" << std::endl;
+                if (strcmp(region, "BEFORE_SRC") == 0) written_before++;
+            } else {
+                std::cout << "  [" << b << "]   0x" << std::hex << boff << std::dec
+                          << "  " << region << "  written" << std::endl;
+                if (strcmp(region, "DST") == 0) {
+                    written_dst++;
+                    if (first_written < 0) first_written = b;
+                    last_written = b;
+                }
+                if (strcmp(region, "AFTER_DST") == 0) written_after++;
+            }
+        }
+    }
+    std::cout << "  Summary: before=" << written_before
+              << " dst=" << written_dst
+              << " after=" << written_after << std::endl;
+
+    // ============================================================
+    // 逐元素验证
+    // ============================================================
+    std::cout << "\n=== Element Verification (first 8 blocks) ===" << std::endl;
+    int dst_start = total_blocks - (PAD_BLOCKS + TOTAL_BLOCKS);
+    for (int b = 0; b < TOTAL_BLOCKS; b++) {
+        int boff = (dst_start + b) * 64;
+        bool any_nonzero = false;
+        for (int off = 0; off < 64; off++) {
+            if (all_buf[boff + off] != 0) { any_nonzero = true; break; }
+        }
+        std::cout << "  Block[" << b << "] offset=0x" << std::hex << boff << std::dec
+                  << " nonzero=" << (any_nonzero ? "YES" : "NO");
+        if (any_nonzero) {
+            std::cout << " data[15:0]=0x"
+                      << std::hex
+                      << ((uint16_t)(uint8_t)all_buf[boff + 1] << 8 | (uint8_t)all_buf[boff])
+                      << std::dec;
+        }
+        std::cout << std::endl;
+    }
+
+    // ============================================================
+    // 保存输出
+    // ============================================================
+    auto ts = std::chrono::system_clock::now().time_since_epoch().count();
+    char fname[256];
+    snprintf(fname, sizeof(fname), "test/output-data/hardware/fwht-output-fp16-%lld.mem", (long long)ts);
+    write_mem_file(fname, all_buf.data() + dst_offset, dst_data_size);
+    std::cout << "\nOutput saved to " << fname << std::endl;
+
+    std::cout << "\n=== HADAMARD TEST COMPLETE ===" << std::endl;
     return 0;
 }

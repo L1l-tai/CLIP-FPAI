@@ -1,7 +1,7 @@
 # Resize/Crop 算子 RTL 分析报告（修订版）
 
 **原版日期：** 2026-05-15
-**修订日期：** 2026-05-27
+**修订日期：** 2026-06-16
 **分析范围：** `rtl/custom_op/resize_crop/`
 
 ---
@@ -380,3 +380,62 @@ w00_i = (8 - x_small) * (8 - y_small)
 # 归一化 (== RTL sum >> 6)
 val_i = (w00_i*p00 + w10_i*p10 + w01_i*p01 + w11_i*p11) // 64
 ```
+
+---
+
+## 10. 硬件适配修改（2026-06-16）
+
+### 10.1 双行独立 rd_data_ready
+
+**问题**：resize 需要读两行源数据（RD_ONLY → RD_SECONE），但原 `rd_data_ready` 只有一个信号，`dbeat_cnt` 在两行之间不清零，导致 RD_SECONE 立即跳转。
+
+**修复**：拆分为两个独立信号：
+```verilog
+assign rd_data_ready_0 = (dbeat_cnt_0 >= arsize_input);  // 第一行
+assign rd_data_ready_1 = !clr_dbeat_1 && (dbeat_cnt_1 >= arsize_input);  // 第二行
+```
+
+FSM 转换：
+```
+RD_ONLY:    rd_done_reg && rd_data_ready_0 → RD_SECONE
+RD_SECONE:  rd_done_reg && rd_data_ready_1 → RESIZE
+WR_PIPLINE: rd_done_reg && wr_done_reg && rd_data_ready_0 → RD_SECONE
+```
+
+### 10.2 enter_rd_secone / clr_dbeat_1
+
+**问题**：`rd_second` 是 FSM 寄存器输出，`rd_second_pos` 比 `state` 进入 RD_SECONE 延迟一拍。FSM 在此延迟拍内已用旧 `rd_data_ready_1` 判断完毕。
+
+**修复**：新增 `prev_state` 寄存器 + `enter_rd_secone` 边沿检测（比 `rd_second_pos` 早一拍）：
+```verilog
+wire enter_rd_secone = (state == RD_SECONE) && (prev_state != RD_SECONE);
+assign clr_dbeat_1 = enter_rd_secone;
+```
+
+`clr_dbeat_1` 组合逻辑门控 `rd_data_ready_1`（`!clr_dbeat_1` 同拍清零），确保 FSM 检查条件时看到 0。
+
+### 10.3 rd_start 在 RD_SECONE 触发
+
+**问题**：`rd_start_pulse_gen` 在 `RD_ONLY → RD_SECONE` 时未清零，DMA 不会为第二行产生读脉冲。
+
+**修复**：`enter_rd_secone` 复位 `rd_start_pulse_gen`，允许在 RD_SECONE 产生新的 `rd_start`。
+
+### 10.4 batch_wr_data 保持组合逻辑
+
+`batch_wr_data` 改为纯组合逻辑 `assign batch_wr_data = {result_val[15:0]}`，`result_valid_pos`（cycle 6）触发时 16 像素已全部稳定。
+
+### 10.5 rd_cnt / wr_cnt 计数简化
+
+同 hadamard/gather：直接每拍握手计数，不加武装机制。
+
+### 10.6 仿真 R 队列修复
+
+`r_queue_cnt > 0` 保护防止对空队列重复握手导致计数器下溢。
+
+### 10.7 寄存器映射
+
+| 功能 | 寄存器索引 | 字节偏移 |
+|------|-----------|---------|
+| Resize 启动 | 0x41 | 0x104 |
+| Resize 完成 | 0x50 | 0x140 |
+| FSM 状态调试 | 0x24 | 0x90 |

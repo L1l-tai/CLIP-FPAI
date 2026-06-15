@@ -23,6 +23,8 @@ module resize (
     input        [255:0]    x_delta       ,     // P点相对于起始原像素的x偏移
     input        [7:0]      y_delta       ,     // P点相对于下一行的y偏移
 
+    input        [15:0]     arsize_input  ,     // 当前行的DMA读beat数
+
     input        [511 : 0]  din           ,
     input                   din_valid     ,
     output                  din_ready     ,
@@ -30,15 +32,18 @@ module resize (
     output       [511 : 0]  dout          ,
     output                  dout_valid    ,
     input                   dout_ready    ,
-    
+
     input                   comp_done     ,
 
     output                  resize_done   ,
+    output                  rd_data_ready_0,    // 第一行读数据全部到达
+    output                  rd_data_ready_1,    // 第二行读数据全部到达
 
     // FIFO 状态输出 → FSM
     output                  fifo_flush_ready,
     output                  fifo_empty,
     // FIFO drain 命令 ← FSM
+    input                   clr_dbeat_1,   // 进入 RD_SECONE 同拍清零 dbeat_cnt_1
     input                   fifo_drain,
 
     input                   clk           ,
@@ -208,7 +213,7 @@ wire [3:0] px_base = {pass_s1, 2'b0};   // 0, 4, 8, 12 per pass
 // ============ 批量写触发 ============
 // result_valid_pos: 计算完成 (result_val 已稳定多周期)
 
-// 批量写数据: 16 像素拼为 512-bit
+// 批量写数据: 组合逻辑直接取 result_val (result_valid_pos 同拍 result_val 已稳定)
 assign batch_wr_data = {result_val[15], result_val[14], result_val[13], result_val[12],
                          result_val[11], result_val[10], result_val[ 9], result_val[ 8],
                          result_val[ 7], result_val[ 6], result_val[ 5], result_val[ 4],
@@ -571,6 +576,31 @@ generate
 endgenerate
 
 assign din_ready = trans_status[0];
+
+// ============ 读数据就绪检测: 两行独立计数 ============
+// dbeat_cnt_0: 第一行 (~rd_second), gen_status 或 rd_second_pos 时清零
+// dbeat_cnt_1: 第二行 ( rd_second), rd_second_pos 时清零
+reg [15:0] dbeat_cnt_0, dbeat_cnt_1;
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        dbeat_cnt_0 <= #0.1 16'd0;
+        dbeat_cnt_1 <= #0.1 16'd0;
+    end else begin
+        if (comp_done || gen_status || rd_second_pos)
+            dbeat_cnt_0 <= #0.1 16'd0;
+        else if (!rd_second && din_valid && din_ready)
+            dbeat_cnt_0 <= #0.1 dbeat_cnt_0 + 1'b1;
+
+        if (comp_done || clr_dbeat_1)
+            dbeat_cnt_1 <= #0.1 16'd0;
+        else if (rd_second && din_valid && din_ready)
+            dbeat_cnt_1 <= #0.1 dbeat_cnt_1 + 1'b1;
+    end
+end
+
+assign rd_data_ready_0 = (dbeat_cnt_0 >= arsize_input);
+assign rd_data_ready_1 = !clr_dbeat_1 && (dbeat_cnt_1 >= arsize_input);
 
 // ============ FIFO 输出路径 ============
 // FIFO 读使能: 写通道激活 + FIFO 有足够数据 + 未在读

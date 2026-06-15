@@ -13,6 +13,7 @@ module gather (
     input                   rd_indices    ,     // dma读索引信号
     input                   trans_data    ,
     input                   gen_status    ,
+    input        [15:0]     indices_beats ,     // 索引期望的DMA beat数
     input        [31:0]     indices_width ,
     input        [31:0]     data_width    ,
 
@@ -35,6 +36,8 @@ module gather (
     output       [511 : 0]  dout          ,
     output                  dout_valid    ,
     input                   dout_ready    ,
+
+    output                  rd_data_ready ,     // 索引数据全部到达
     
     //input      [ 15: 0]     arsize        ,
     input                   comp_done     ,
@@ -70,10 +73,6 @@ wire    [511 : 0]           dout_rs    ;
 wire                        dout_valid_rs  ;
 wire                        dout_ready_rs  ;
 
-wire       [31 : 0]         arbase_data_gen_c;
-wire       [15 : 0]         arsize_data_gen_c;
-wire       [31 : 0]         awbase_gen_c;
-wire       [15 : 0]         awsize_gen_c;
 
 
 reg        [31 : 0]         arbase_offset;
@@ -111,6 +110,16 @@ always@(posedge clk or negedge rst_n) begin
     end
 end
 
+
+reg gen_status_r;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        gen_status_r <= #0.1 1'b0;
+    end
+    else begin
+        gen_status_r <= #0.1 gen_status;
+    end
+end
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -177,12 +186,12 @@ always @(posedge clk or negedge rst_n) begin
         awsize_gen <= #0.1 16'b0;
     end
     else begin
-        if(gen_status) begin
+        if(gen_status && gen_status_r) begin
             addr_gen_valid <= #0.1 1'b1;
-            arbase_data_gen <= #0.1 arbase_data_gen_c;
-            arsize_data_gen <= #0.1 arsize_data_gen_c;
-            awbase_gen <= #0.1 awbase_gen_c;
-            awsize_gen <= #0.1 awsize_gen_c;
+            arbase_data_gen <= #0.1 arbase_data_reg + arbase_offset;
+            arsize_data_gen <= #0.1 data_width_reg;
+            awbase_gen <= #0.1 awbase_dout_reg + awbase_offset;
+            awsize_gen <= #0.1 data_width_reg;
         end
         else begin
             addr_gen_valid <= #0.1 1'b0;
@@ -207,19 +216,29 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 
+// 索引数据接收计数器: 每拍 din_valid && din_ready 握手计数
+reg [15:0] rd_cnt;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        rd_cnt <= #0.1 16'd0;
+    end else if (comp_done || gen_status) begin
+        rd_cnt <= #0.1 16'd0;
+    end else if (rd_indices && din_valid && din_ready) begin
+        rd_cnt <= #0.1 rd_cnt + 1'b1;
+    end
+end
+
+assign rd_data_ready = (rd_cnt >= indices_beats);
+
 assign trans_data_pos = ~trans_data_reg & trans_data;
 
 assign indice_now = current_indices[current_indices_cnt*32+ : 32];
 
 (* use_dsp = "yes" *) wire [31:0] arbase_offset_c;
 assign arbase_offset_c = indice_now_reg * (data_width_reg << 6);
-assign arbase_data_gen_c = arbase_data_reg + arbase_offset_c;
-assign arsize_data_gen_c = data_width_reg;
 
 (* use_dsp = "yes" *) wire [31:0] awbase_offset_c;
 assign awbase_offset_c = output_addr_cnt * (data_width_reg << 6);
-assign awbase_gen_c = awbase_dout_reg + awbase_offset_c;
-assign awsize_gen_c = data_width_reg;
 
 assign dout_rs = rd_indices ? 512'd0 : din;
 assign din_ready = rd_indices ? ~indices_fifo_almost_full : dout_ready_rs;

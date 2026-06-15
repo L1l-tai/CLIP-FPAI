@@ -28,7 +28,22 @@ module gather_sim;
     wire itf_rready;
     wire reset_reg;
     wire gather_comp_done;
-    assign gather_comp_done = U_customop_top.comp_done;
+    wire gather_rd_data_ready;
+    wire [2:0] gather_fsm_state;
+    reg  [31:0] itf_ra_araddr;
+    assign gather_comp_done     = U_customop_top.comp_done;
+    assign gather_rd_data_ready = U_customop_top.rd_data_ready_gather;
+    assign gather_fsm_state     = U_customop_top.U_gather_fsm.state;
+
+    // 监控 rready 变化
+    reg         itf_rready_r;
+    always @(posedge clk) itf_rready_r <= itf_rready;
+    wire rready_negedge = !itf_rready && itf_rready_r;
+    always @(posedge clk) begin
+        if (rready_negedge)
+            $display("TB: *** rready FELL (rd_ready=%b state=%d) ***",
+                     gather_rd_data_ready, gather_fsm_state);
+    end
 
     customop_top U_customop_top (
         .itf_ra_awaddr(itf_ra_awaddr), .itf_ra_awdata(itf_ra_awdata),
@@ -57,70 +72,73 @@ module gather_sim;
     endfunction
 
     // ============================================================
-    // 真实 DDR AXI 内存模型
+    // 真实 AXI DDR 模型 (对齐硬件验证行为)
     // ============================================================
     localparam READ_LATENCY = 4;
-    localparam R_QUEUE_DEPTH = 4;
-    reg [31:0]  r_queue_addr  [0:R_QUEUE_DEPTH-1];
-    reg [7:0]   r_queue_timer [0:R_QUEUE_DEPTH-1];
-    reg         r_queue_valid [0:R_QUEUE_DEPTH-1];
-    integer     r_queue_wr_ptr, r_queue_rd_ptr, r_queue_cnt;
+    reg         r_busy;
+    reg [31:0]  pending_ar_addr;
+    reg [7:0]   r_latency_cnt;
 
+    // AR: 脉冲 ready + r_busy 串行化
     always @(posedge clk) begin
         if (!rst_n) begin
-            itf_arready <= 1'b1; r_queue_wr_ptr <= 0; r_queue_cnt <= 0;
-            for (int q = 0; q < R_QUEUE_DEPTH; q++) r_queue_valid[q] <= 1'b0;
+            itf_arready <= 1'b0;
+            r_busy      <= 1'b0;
         end else begin
-            itf_arready <= (r_queue_cnt < R_QUEUE_DEPTH);
+            if (itf_arvalid && !itf_arready && !r_busy)
+                itf_arready <= 1'b1;
+            else
+                itf_arready <= 1'b0;
+
             if (itf_arvalid && itf_arready) begin
-                r_queue_addr[r_queue_wr_ptr]  <= itf_araddr;
-                r_queue_timer[r_queue_wr_ptr] <= READ_LATENCY;
-                r_queue_valid[r_queue_wr_ptr] <= 1'b1;
-                r_queue_wr_ptr <= (r_queue_wr_ptr + 1) % R_QUEUE_DEPTH;
-                r_queue_cnt   <= r_queue_cnt + 1;
+                pending_ar_addr <= itf_araddr;
+                r_busy <= 1'b1;
+                $display("TB: AR Addr=0x%08X", itf_araddr);
             end
         end
     end
 
-    reg r_data_pending;
+    // R: 延迟后返回, r_busy 在 R 握手后释放
     always @(posedge clk) begin
         if (!rst_n) begin
-            itf_rvalid <= 1'b0; itf_rdata <= 512'd0;
-            r_queue_rd_ptr <= 0; r_data_pending <= 1'b0;
+            itf_rvalid     <= 1'b0;
+            itf_rdata      <= 512'd0;
+            r_latency_cnt  <= 0;
         end else begin
-            itf_rvalid <= 1'b0;
-            if (r_data_pending) begin
-                itf_rdata  <= mem[get_mem_index(r_queue_addr[r_queue_rd_ptr])];
-                itf_rvalid <= 1'b1;
-                if (itf_rready) begin
-                    r_queue_valid[r_queue_rd_ptr] <= 1'b0;
-                    r_queue_rd_ptr <= (r_queue_rd_ptr + 1) % R_QUEUE_DEPTH;
-                    r_queue_cnt   <= r_queue_cnt - 1;
-                    r_data_pending <= 1'b0;
-                end
-            end else if (r_queue_cnt > 0 && r_queue_valid[r_queue_rd_ptr]) begin
-                if (r_queue_timer[r_queue_rd_ptr] > 0) begin
-                    r_queue_timer[r_queue_rd_ptr] <= r_queue_timer[r_queue_rd_ptr] - 1;
-                end else begin
-                    itf_rdata  <= mem[get_mem_index(r_queue_addr[r_queue_rd_ptr])];
+            if (itf_rvalid && itf_rready && r_queue_cnt > 0) begin
+                itf_rvalid    <= 1'b0;
+                r_busy        <= 1'b0;
+                r_latency_cnt <= 0;
+            end
+
+            if (r_busy && !itf_rvalid) begin
+                if (r_latency_cnt < READ_LATENCY)
+                    r_latency_cnt <= r_latency_cnt + 1'b1;
+                else begin
+                    itf_rdata  <= mem[get_mem_index(pending_ar_addr)];
                     itf_rvalid <= 1'b1;
-                    r_data_pending <= 1'b1;
+                    $display("TB: R data Addr=0x%08X first16=0x%04X",
+                             pending_ar_addr,
+                             mem[get_mem_index(pending_ar_addr)][15:0]);
                 end
             end
         end
     end
 
+    // AW: 脉冲式 ready
     always @(posedge clk) begin
         if (!rst_n) begin
-            itf_awready <= 1'b1; write_pending <= 1'b0; pending_waddr <= 32'd0;
+            itf_awready <= 1'b0;
         end else begin
-            itf_awready <= 1'b1;
+            if (itf_awvalid && !itf_awready)
+                itf_awready <= 1'b1;
+            else
+                itf_awready <= 1'b0;
+
             if (itf_awvalid && itf_awready) begin
-                pending_waddr <= itf_awaddr; write_pending <= 1'b1;
-            end
-            if (write_pending) begin
-                mem[get_mem_index(pending_waddr)] <= itf_awdata;
-                write_pending <= 1'b0;
+                mem[get_mem_index(itf_awaddr)] <= itf_awdata;
+                $display("TB: Wrote Addr=0x%08X data[15:0]=0x%04X",
+                         itf_awaddr, itf_awdata[15:0]);
             end
         end
     end
@@ -156,6 +174,20 @@ module gather_sim;
 
         repeat (10) @(posedge clk);
         $display("DMA Transfer Completed.");
+
+        // 验证结果
+        $display("Verifying Results...");
+        for (i = 0; i < TOTAL_DATA_BEATS; i = i + 1) begin
+            integer dst_addr, dst_idx;
+            dst_addr = DST_BASE_ADDR + i * 64;
+            dst_idx = get_mem_index(dst_addr);
+            if (mem[dst_idx] != 512'd0) begin
+                $display("PASS Block[%d]: Addr 0x%08X Data[63:0]=0x%016X",
+                         i, dst_addr, mem[dst_idx][63:0]);
+            end else begin
+                $display("WARNING Block[%d]: Addr 0x%08X No data written", i, dst_addr);
+            end
+        end
 
         write_mem_to_file("gather-output.mem", DST_BASE_ADDR, TOTAL_DATA_BEATS);
         $display("GATHER SIMULATION COMPLETED");

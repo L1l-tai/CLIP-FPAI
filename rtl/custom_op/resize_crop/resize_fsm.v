@@ -29,6 +29,8 @@ module resize_fsm (
     input               resize_done,     // resize operation complete
     input               axis_done,       // axis calibration complete
     input               axis_pre_cal_done,// axis pre-calculation complete
+    input               rd_data_ready_0, // 第一行读数据到达
+    input               rd_data_ready_1, // 第二行读数据到达
 
     output reg [31:0]   arbase,
     output reg [15:0]   arsize,
@@ -38,6 +40,7 @@ module resize_fsm (
     output reg          rd_start,
     output reg          wr_start,
     output reg          rd_second,      // 读取第二行数据信号(用于双线性插值)
+    output wire         clr_dbeat_1,   // 进入 RD_SECONE 同拍清零 dbeat_cnt_1
     output reg          comp_done,
 
     //MSB: WR; LSB: RD
@@ -84,11 +87,17 @@ reg         rd_start_pulse_gen;
 
 wire        wr_ddr;
 wire        rd_ddr;
-wire        rd_done_reg_pos;
-
-assign wr_ddr = (state == WR_PIPELINE) | (state == WR_ONLY) | (state == WAIT_DRAIN);
+assign wr_ddr = (state == WR_PIPELINE) | (state == WR_ONLY);
 assign rd_ddr = (state == WR_PIPELINE) | (state == RD_ONLY) | (state == RD_SECONE);
-assign rd_done_reg_pos = rd_done_reg & ~rd_done_reg_1;
+
+// RD_SECONE 进入检测: 在 RD_ONLY→RD_SECONE 时复位 rd_start_pulse_gen
+reg [3:0] prev_state;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) prev_state <= #0.1 4'd0;
+    else        prev_state <= #0.1 state;
+end
+wire enter_rd_secone = (state == RD_SECONE) && (prev_state != RD_SECONE);
+assign clr_dbeat_1 = enter_rd_secone;
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -119,14 +128,14 @@ always @(posedge clk or negedge rst_n) begin
         rd_start_pulse_gen <= #0.1 1'b0;
     end
     else begin
-        if(rd_ddr) begin
+        if(enter_rd_secone) begin
+            rd_start_pulse_gen <= #0.1 1'b0;
+            rd_start <= #0.1 1'b0;
+        end
+        else if(rd_ddr) begin
             if(!rd_start_pulse_gen) begin
                 rd_start <= #0.1 1'b1;
                 rd_start_pulse_gen <= #0.1 1'b1;
-            end
-            else if(rd_done_reg_pos) begin
-                rd_start <= #0.1 1'b0;
-                rd_start_pulse_gen <= #0.1 1'b0;
             end
             else begin
                 rd_start <= #0.1 1'b0;
@@ -253,12 +262,12 @@ always @(*) begin
             end
         end
         RD_ONLY: begin
-            if (rd_done_reg) begin
+            if (rd_done_reg && rd_data_ready_0) begin
                 next_state = RD_SECONE;
             end
         end
         RD_SECONE: begin
-            if (rd_cnt == 2'd2) begin
+            if (rd_done_reg && rd_data_ready_1) begin
                 next_state = RESIZE;
             end
         end
@@ -268,7 +277,7 @@ always @(*) begin
             end
         end
         WR_PIPELINE: begin
-            if (rd_done_reg && wr_done_reg) begin
+            if (rd_done_reg && wr_done_reg && rd_data_ready_0) begin
                 next_state = RD_SECONE;
             end
         end
