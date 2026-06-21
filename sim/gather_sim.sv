@@ -13,16 +13,26 @@ module gather_sim;
     localparam SRC_BASE_ADDR = 32'h0000_2000;
     localparam DST_BASE_ADDR = 32'h0001_0000;
 
-    reg clk, ra_clk, rst_n, ra_rst_n;
-    reg [31:0] itf_ra_awaddr, itf_ra_awdata;
-    reg itf_ra_awvalid, itf_ra_arvalid, itf_ra_rready;
-    wire itf_ra_awready, itf_ra_arready;
+    reg clk;
+    reg ra_clk;
+    reg rst_n;
+    reg ra_rst_n;
+    reg [31:0] itf_ra_awaddr;
+    reg [31:0] itf_ra_awdata;
+    reg itf_ra_awvalid;
+    reg itf_ra_arvalid;
+    reg itf_ra_rready;
+    wire itf_ra_awready;
+    wire itf_ra_arready;
     wire [31:0] itf_ra_rdata;
     wire itf_ra_rvalid;
-    wire [31:0] itf_awaddr, itf_araddr;
+    wire [31:0] itf_awaddr;
+    wire [31:0] itf_araddr;
     wire [511:0] itf_awdata;
-    wire itf_awvalid, itf_arvalid;
-    reg itf_awready, itf_arready;
+    wire itf_awvalid;
+    wire itf_arvalid;
+    reg itf_awready;
+    reg itf_arready;
     reg [511:0] itf_rdata;
     reg itf_rvalid;
     wire itf_rready;
@@ -38,7 +48,8 @@ module gather_sim;
     // 监控 rready 变化
     reg         itf_rready_r;
     always @(posedge clk) itf_rready_r <= itf_rready;
-    wire rready_negedge = !itf_rready && itf_rready_r;
+    wire rready_negedge;
+    assign rready_negedge = !itf_rready && itf_rready_r;
     always @(posedge clk) begin
         if (rready_negedge)
             $display("TB: *** rready FELL (rd_ready=%b state=%d) ***",
@@ -46,18 +57,33 @@ module gather_sim;
     end
 
     customop_top U_customop_top (
-        .itf_ra_awaddr(itf_ra_awaddr), .itf_ra_awdata(itf_ra_awdata),
-        .itf_ra_awvalid(itf_ra_awvalid), .itf_ra_awready(itf_ra_awready),
-        .itf_ra_araddr(itf_ra_araddr), .itf_ra_arvalid(itf_ra_arvalid),
-        .itf_ra_arready(itf_ra_arready), .itf_ra_rdata(itf_ra_rdata),
-        .itf_ra_rvalid(itf_ra_rvalid), .itf_ra_rready(itf_ra_rready),
-        .itf_awaddr(itf_awaddr), .itf_awdata(itf_awdata),
-        .itf_awvalid(itf_awvalid), .itf_awready(itf_awready),
-        .itf_araddr(itf_araddr), .itf_arvalid(itf_arvalid),
-        .itf_arready(itf_arready), .itf_rdata(itf_rdata),
-        .itf_rvalid(itf_rvalid), .itf_rready(itf_rready),
-        .reset_reg(reset_reg), .clk(clk), .ra_clk(ra_clk),
-        .rst_n(rst_n), .ra_rst_n(ra_rst_n)
+        .itf_ra_awaddr     (itf_ra_awaddr),
+        .itf_ra_awdata     (itf_ra_awdata),
+        .itf_ra_awvalid    (itf_ra_awvalid),
+        .itf_ra_awready    (itf_ra_awready),
+        .itf_ra_araddr     (itf_ra_araddr),
+        .itf_ra_arvalid    (itf_ra_arvalid),
+        .itf_ra_arready    (itf_ra_arready),
+        .itf_ra_rdata      (itf_ra_rdata),
+        .itf_ra_rvalid     (itf_ra_rvalid),
+        .itf_ra_rready     (itf_ra_rready),
+
+        .itf_awaddr        (itf_awaddr),
+        .itf_awdata        (itf_awdata),
+        .itf_awvalid       (itf_awvalid),
+        .itf_awready       (itf_awready),
+        .itf_araddr        (itf_araddr),
+        .itf_arvalid       (itf_arvalid),
+        .itf_arready       (itf_arready),
+        .itf_rdata         (itf_rdata),
+        .itf_rvalid        (itf_rvalid),
+        .itf_rready        (itf_rready),
+
+        .reset_reg         (reset_reg),
+        .clk               (clk),
+        .ra_clk            (ra_clk),
+        .rst_n             (rst_n),
+        .ra_rst_n          (ra_rst_n)
     );
 
     initial begin clk = 0; forever #(CLK_PERIOD/2) clk = ~clk; end

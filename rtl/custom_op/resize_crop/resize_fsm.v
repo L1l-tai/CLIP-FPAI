@@ -96,7 +96,8 @@ always @(posedge clk or negedge rst_n) begin
     if (!rst_n) prev_state <= #0.1 4'd0;
     else        prev_state <= #0.1 state;
 end
-wire enter_rd_secone = (state == RD_SECONE) && (prev_state != RD_SECONE);
+wire enter_rd_secone;
+assign enter_rd_secone = (state == RD_SECONE) && (prev_state != RD_SECONE);
 assign clr_dbeat_1 = enter_rd_secone;
 
 always @(posedge clk or negedge rst_n) begin

@@ -17,16 +17,26 @@ module resize_sim;
     localparam SRC_BASE_ADDR = 32'h0000_2000;
     localparam DST_BASE_ADDR = 32'h0001_0000;
 
-    reg clk, ra_clk, rst_n, ra_rst_n;
-    reg [31:0] itf_ra_awaddr, itf_ra_awdata;
-    reg itf_ra_awvalid, itf_ra_arvalid, itf_ra_rready;
-    wire itf_ra_awready, itf_ra_arready;
+    reg clk;
+    reg ra_clk;
+    reg rst_n;
+    reg ra_rst_n;
+    reg [31:0] itf_ra_awaddr;
+    reg [31:0] itf_ra_awdata;
+    reg itf_ra_awvalid;
+    reg itf_ra_arvalid;
+    reg itf_ra_rready;
+    wire itf_ra_awready;
+    wire itf_ra_arready;
     wire [31:0] itf_ra_rdata;
     wire itf_ra_rvalid;
-    wire [31:0] itf_awaddr, itf_araddr;
+    wire [31:0] itf_awaddr;
+    wire [31:0] itf_araddr;
     wire [511:0] itf_awdata;
-    wire itf_awvalid, itf_arvalid;
-    reg itf_awready, itf_arready;
+    wire itf_awvalid;
+    wire itf_arvalid;
+    reg itf_awready;
+    reg itf_arready;
     reg [511:0] itf_rdata;
     reg itf_rvalid;
     wire itf_rready;
@@ -36,8 +46,10 @@ module resize_sim;
     assign rs_comp_done = U_customop_top.comp_done_rs;
 
     // 诊断 RD_SECONE 持续时间
-    wire [3:0]  rs_fsm_state = U_customop_top.U_resize_fsm.state;
-    wire        rs_rd_second = U_customop_top.U_resize_fsm.rd_second;
+    wire [3:0]  rs_fsm_state;
+    assign rs_fsm_state = U_customop_top.U_resize_fsm.state;
+    wire        rs_rd_second;
+    assign rs_rd_second = U_customop_top.U_resize_fsm.rd_second;
     wire        rs_rd_done_reg;
     wire        rs_rd_ready_0;
     wire        rs_rd_ready_1;
@@ -51,7 +63,8 @@ module resize_sim;
 
     reg [3:0] rs_state_r;
     always @(posedge clk) rs_state_r <= rs_fsm_state;
-    wire rs_enter_rd_secone = (rs_fsm_state == 4'd5) && (rs_state_r != 4'd5);
+    wire rs_enter_rd_secone;
+    assign rs_enter_rd_secone = (rs_fsm_state == 4'd5) && (rs_state_r != 4'd5);
 
     always @(posedge clk) begin
         if (rs_enter_rd_secone)
@@ -64,18 +77,33 @@ module resize_sim;
     end
 
     customop_top U_customop_top (
-        .itf_ra_awaddr(itf_ra_awaddr), .itf_ra_awdata(itf_ra_awdata),
-        .itf_ra_awvalid(itf_ra_awvalid), .itf_ra_awready(itf_ra_awready),
-        .itf_ra_araddr(itf_ra_araddr), .itf_ra_arvalid(itf_ra_arvalid),
-        .itf_ra_arready(itf_ra_arready), .itf_ra_rdata(itf_ra_rdata),
-        .itf_ra_rvalid(itf_ra_rvalid), .itf_ra_rready(itf_ra_rready),
-        .itf_awaddr(itf_awaddr), .itf_awdata(itf_awdata),
-        .itf_awvalid(itf_awvalid), .itf_awready(itf_awready),
-        .itf_araddr(itf_araddr), .itf_arvalid(itf_arvalid),
-        .itf_arready(itf_arready), .itf_rdata(itf_rdata),
-        .itf_rvalid(itf_rvalid), .itf_rready(itf_rready),
-        .reset_reg(reset_reg), .clk(clk), .ra_clk(ra_clk),
-        .rst_n(rst_n), .ra_rst_n(ra_rst_n)
+        .itf_ra_awaddr     (itf_ra_awaddr),
+        .itf_ra_awdata     (itf_ra_awdata),
+        .itf_ra_awvalid    (itf_ra_awvalid),
+        .itf_ra_awready    (itf_ra_awready),
+        .itf_ra_araddr     (itf_ra_araddr),
+        .itf_ra_arvalid    (itf_ra_arvalid),
+        .itf_ra_arready    (itf_ra_arready),
+        .itf_ra_rdata      (itf_ra_rdata),
+        .itf_ra_rvalid     (itf_ra_rvalid),
+        .itf_ra_rready     (itf_ra_rready),
+
+        .itf_awaddr        (itf_awaddr),
+        .itf_awdata        (itf_awdata),
+        .itf_awvalid       (itf_awvalid),
+        .itf_awready       (itf_awready),
+        .itf_araddr        (itf_araddr),
+        .itf_arvalid       (itf_arvalid),
+        .itf_arready       (itf_arready),
+        .itf_rdata         (itf_rdata),
+        .itf_rvalid        (itf_rvalid),
+        .itf_rready        (itf_rready),
+
+        .reset_reg         (reset_reg),
+        .clk               (clk),
+        .ra_clk            (ra_clk),
+        .rst_n             (rst_n),
+        .ra_rst_n          (ra_rst_n)
     );
 
     initial begin clk = 0; forever #(CLK_PERIOD/2) clk = ~clk; end

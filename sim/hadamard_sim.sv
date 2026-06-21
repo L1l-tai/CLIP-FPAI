@@ -62,8 +62,10 @@ module hadamard_sim;
     // 监控 rready 和 rd_data_ready 变化
     reg         itf_rready_r;
     always @(posedge clk) itf_rready_r <= itf_rready;
-    wire rready_negedge = !itf_rready && itf_rready_r;
-    wire [2:0] hd_fsm_state = U_customop_top.U_hadamard_fsm.state;
+    wire rready_negedge;
+    assign rready_negedge = !itf_rready && itf_rready_r;
+    wire [2:0] hd_fsm_state;
+    assign hd_fsm_state = U_customop_top.U_hadamard_fsm.state;
     always @(posedge clk) begin
         if (rready_negedge)
             $display("TB: *** rready FELL (rd_ready=%b rd_cnt=%d state=%d cal=%b) ***",
@@ -221,7 +223,7 @@ module hadamard_sim;
             itf_rdata      <= 512'd0;
             r_latency_cnt  <= 0;
         end else begin
-            if (itf_rvalid && itf_rready && r_queue_cnt > 0) begin
+            if (itf_rvalid && itf_rready ) begin
                 itf_rvalid    <= 1'b0;
                 r_busy        <= 1'b0;
                 r_latency_cnt <= 0;

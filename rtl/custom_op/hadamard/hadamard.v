@@ -76,7 +76,8 @@ end
 // rd_data_ready: 读数据全部到达 (rd_cnt >= 每块预期读数)
 // FP16(cal_percision=1): 每块 2 DMA word → rd_cnt >= 2
 // INT8(cal_percision=0): 每块 1 DMA word → rd_cnt >= 1
-wire [1:0] rd_expected = cal_percision ? 2'd2 : 2'd1;
+wire [1:0] rd_expected;
+assign rd_expected = cal_percision ? 2'd2 : 2'd1;
 assign rd_data_ready = (rd_cnt >= rd_expected);
 
 
@@ -181,9 +182,11 @@ wire [15:0]         s_valid_out;
 wire                s_valid_out_all;
 reg                 s_valid_out_r;
 reg [2:0]           stage_cnt;
-wire sX_start = s0_valid_pos | s1_valid_pos | s2_valid_pos |
+wire sX_start;
+    assign sX_start = s0_valid_pos | s1_valid_pos | s2_valid_pos |
                 s3_valid_pos | s4_valid_pos | s5_valid_pos;
-reg  sX_start_r1, sX_start_r2;
+reg  sX_start_r1;
+    reg  sX_start_r2;
 wire s_valid_in;
 assign s_valid_in = sX_start_r1 | sX_start_r2;  // sX_start延迟1拍, 连续两拍触发 PUB
 
@@ -267,8 +270,10 @@ always @(posedge clk or negedge rst_n) begin
 end
 
 always @(posedge clk or negedge rst_n) begin
-    if(!rst_n) begin sX_start_r1 <= 1'b0; sX_start_r2 <= 1'b0; end
-    else       begin sX_start_r1 <= sX_start; sX_start_r2 <= sX_start_r1; end
+    if(!rst_n) begin sX_start_r1 <= 1'b0;
+            sX_start_r2 <= 1'b0; end
+    else       begin sX_start_r1 <= sX_start;
+            sX_start_r2 <= sX_start_r1; end
 end
 
 always @(posedge clk or negedge rst_n) begin
@@ -334,9 +339,12 @@ generate
         localparam LO5_g1 = (I1%32)+(I1/32)*64;
         localparam HI5_g1 = LO5_g1 + 32;
 
-        wire [15:0] op_a_g0, op_a_g1;
-        wire [15:0] op_b_g0, op_b_g1;
-        wire [15:0] op_a, op_b;
+        wire [15:0] op_a_g0;
+        wire [15:0] op_a_g1;
+        wire [15:0] op_b_g0;
+        wire [15:0] op_b_g1;
+        wire [15:0] op_a;
+        wire [15:0] op_b;
         wire [15:0] result_add;
         wire [15:0] result_sub;
         reg  [15:0] op_a_r;
@@ -344,7 +352,8 @@ generate
         reg  s_valid_in_r;
 
         // 6:1 per group: stage_cnt 直接索引, 省一级 sX_valid_r 寄存器延迟
-        wire [3:0] sc = stage_cnt[2:0];
+        wire [3:0] sc;
+        assign sc = stage_cnt[2:0];
         assign op_a_g0 = (sc == 3'd5) ? stage5[LO5_g0] :
                          (sc == 3'd4) ? stage4[LO4_g0] :
                          (sc == 3'd3) ? stage3[LO3_g0] :
@@ -367,22 +376,34 @@ generate
                          (sc == 3'd1) ? stage1[HI1_g1] : stage0[HI0_g1];
 
         // 6:1 mux 输出 → 寄存器 (切分长组合路径)
-        reg [15:0] op_a_g0_r, op_a_g1_r, op_b_g0_r, op_b_g1_r;
+        reg [15:0] op_a_g0_r;
+        reg [15:0] op_a_g1_r;
+        reg [15:0] op_b_g0_r;
+        reg [15:0] op_b_g1_r;
         reg        s_valid_in_r1, s_valid_in_r2;
 
         always @(posedge clk or negedge rst_n) begin
             if(!rst_n) begin
-                op_a_g0_r <= 16'b0; op_a_g1_r <= 16'b0;
-                op_b_g0_r <= 16'b0; op_b_g1_r <= 16'b0;
-                s_valid_in_r1 <= 1'b0; s_valid_in_r2 <= 1'b0;
-                op_a_r <= 16'b0; op_b_r <= 16'b0; s_valid_in_r <= 1'b0;
+                op_a_g0_r <= 16'b0;
+                    op_a_g1_r <= 16'b0;
+                op_b_g0_r <= 16'b0;
+                    op_b_g1_r <= 16'b0;
+                s_valid_in_r1 <= 1'b0;
+                    s_valid_in_r2 <= 1'b0;
+                op_a_r <= 16'b0;
+                    op_b_r <= 16'b0;
+                    s_valid_in_r <= 1'b0;
             end else if(gen_status) begin
-                s_valid_in_r1 <= 1'b0; s_valid_in_r <= 1'b0;
+                s_valid_in_r1 <= 1'b0;
+                    s_valid_in_r <= 1'b0;
             end else begin
                 // Stage1: 锁存6:1 mux输出
-                op_a_g0_r <= op_a_g0; op_a_g1_r <= op_a_g1;
-                op_b_g0_r <= op_b_g0; op_b_g1_r <= op_b_g1;
-                s_valid_in_r1 <= s_valid_in; s_valid_in_r2 <= s_valid_in_r1;
+                op_a_g0_r <= op_a_g0;
+                    op_a_g1_r <= op_a_g1;
+                op_b_g0_r <= op_b_g0;
+                    op_b_g1_r <= op_b_g1;
+                s_valid_in_r1 <= s_valid_in;
+                    s_valid_in_r2 <= s_valid_in_r1;
                 // Stage2: 2:1 mux (边沿检测对齐延迟1拍的数据)
                 op_a_r    <= (s_valid_in_r1 && !s_valid_in_r2) ? op_a_g0_r : op_a_g1_r;
                 op_b_r    <= (s_valid_in_r1 && !s_valid_in_r2) ? op_b_g0_r : op_b_g1_r;
@@ -592,7 +613,8 @@ always @(posedge clk or negedge rst_n) begin
         pipeline_busy <= #0.1 1'b1;
 end
 
-wire [1:0] wr_done_thresh = cal_percision ? 2'd2 : 2'd1;
+wire [1:0] wr_done_thresh;
+    assign wr_done_thresh = cal_percision ? 2'd2 : 2'd1;
 
 assign dout_rs = cal_percision ? (wr_cnt == 2'd0 ? dout_lo : dout_hi) : dout_int8;
 assign dout_valid_rs = result_valid && !pipeline_busy && trans_status[1];

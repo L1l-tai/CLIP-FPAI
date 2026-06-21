@@ -44,11 +44,12 @@ module resize_axis (
     reg        axis_pre_cal_done_r;
 
     // ============ 裁剪参数计算 (axis_cal_status 激活时) ============
-    wire [15:0] crop_size_w = crop_enable
-        ? ((rwidth_rs < rheight_rs) ? rwidth_rs : rheight_rs)
-        : rwidth_rs;
-    wire [15:0] crop_off_x_w = crop_enable ? ((rwidth_rs  - crop_size_w) >> 1) : 16'd0;
-    wire [15:0] crop_off_y_w = crop_enable ? ((rheight_rs - crop_size_w) >> 1) : 16'd0;
+    wire [15:0] crop_size_w;
+    wire [15:0] crop_off_x_w;
+    wire [15:0] crop_off_y_w;
+    assign crop_size_w  = crop_enable ? ((rwidth_rs < rheight_rs) ? rwidth_rs : rheight_rs) : rwidth_rs;
+    assign crop_off_x_w = crop_enable ? ((rwidth_rs  - crop_size_w) >> 1) : 16'd0;
+    assign crop_off_y_w = crop_enable ? ((rheight_rs - crop_size_w) >> 1) : 16'd0;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -183,7 +184,8 @@ module resize_axis (
 
     // ============ 第二级计算 ============
     // 共享 subtrahend: pre_bias+1 预计算一次, 16 路减法复用
-    wire [15:0] sub_val = pre_bias + 16'd1;
+    wire [15:0] sub_val;
+    assign sub_val = pre_bias + 16'd1;
     assign x_delta_sub[15:0]   = x_delta_mul_r[15:0]   - sub_val;
     assign x_delta_sub[31:16]  = x_delta_mul_r[31:16]  - sub_val;
     assign x_delta_sub[47:32]  = x_delta_mul_r[47:32]  - sub_val;
@@ -211,7 +213,8 @@ module resize_axis (
     assign pre_bias_next = pre_bias_next_s[15:0];
     // 从寄存器取 ratioed_x, 切断 DSP→比较器 长路径
     assign ratioed_x = ratioed_x_full_r[27:12];
-    wire [7:0] data_valid_int = (ratioed_x[15:8] > 8'd16) ? 8'd16 : ratioed_x[15:8];
+    wire [7:0] data_valid_int;
+    assign data_valid_int = (ratioed_x[15:8] > 8'd16) ? 8'd16 : ratioed_x[15:8];
 
     // ============ 流水线寄存器更新 ============
     // 第一级流水线寄存器: 锁存第一级乘法计算结果

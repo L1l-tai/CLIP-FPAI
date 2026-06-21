@@ -79,9 +79,12 @@ module resize_addr_gen(
     assign row_changed = (y_bias != y_bias_prev);
 
     // ============ 常数计算 ============
-    wire [15:0] dst_blocks_per_row  = (dst_width + 15) >> 4;
-    wire [15:0] src_blocks_per_row  = (crop_size + 15) >> 4;
-    wire [15:0] total_src_blocks    = wheight_rs * src_blocks_per_row;
+    wire [15:0] dst_blocks_per_row;
+    wire [15:0] src_blocks_per_row;
+    wire [15:0] total_src_blocks;
+    assign dst_blocks_per_row = (dst_width + 15) >> 4;
+    assign src_blocks_per_row = (crop_size + 15) >> 4;
+    assign total_src_blocks   = wheight_rs * src_blocks_per_row;
 
     assign rs_num    = wheight_rs * dst_blocks_per_row;
     assign src_done  = (total_src_blocks_r > 0) && (total_rd_cnt >= total_src_blocks_r);
@@ -100,11 +103,14 @@ module resize_addr_gen(
 
     // ============ 地址计算 (组合逻辑) ============
     // 用位拼接替代 << 和 * 常数, 避免综合工具误推 DSP
-    wire [17:0] rwidth_bytes  = {rwidth_rs,  2'b0};  // rwidth_rs * 4
-    wire [17:0] crop_off_x_b  = {crop_off_x, 2'b0};  // crop_off_x * 4
+    wire [17:0] rwidth_bytes;
+    wire [17:0] crop_off_x_b;
+    assign rwidth_bytes = {rwidth_rs,  2'b0};  // rwidth_rs * 4
+    assign crop_off_x_b = {crop_off_x, 2'b0};  // crop_off_x * 4
 
     // 加法独立 (Stage2 锁存) — 路径: reg→adder→reg
-    wire [16:0] y_bias_sum = y_bias + crop_off_y;
+    wire [16:0] y_bias_sum;
+    assign y_bias_sum = y_bias + crop_off_y;
 
     // DSP 乘法 (Stage3 锁存) — 路径: reg(加法结果)→DSP→reg
     assign y_bias_x_rwidth    = y_bias_sum_r * rwidth_bytes;

@@ -151,7 +151,8 @@ end
 
 // resize_status 下降沿检测 (离开 RESIZE 状态时清零 result_valid)
 reg  resize_status_reg;
-wire resize_status_negedge = ~resize_status & resize_status_reg;
+wire resize_status_negedge;
+assign resize_status_negedge = ~resize_status & resize_status_reg;
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n)
@@ -192,14 +193,20 @@ always @(posedge clk or negedge rst_n) begin
         resize_cycle <= #0.1 3'd0;
 end
 
-reg [1:0] pass_s1, pass_s2, pass_s3;
+reg [1:0] pass_s1;
+    reg [1:0] pass_s2;
+    reg [1:0] pass_s3;
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        pass_s1 <= #0.1 2'd0; pass_s2 <= #0.1 2'd0; pass_s3 <= #0.1 2'd0;
+        pass_s1 <= #0.1 2'd0;
+            pass_s2 <= #0.1 2'd0;
+            pass_s3 <= #0.1 2'd0;
     end
     else if (!resize_status) begin
-        pass_s1 <= #0.1 2'd0; pass_s2 <= #0.1 2'd0; pass_s3 <= #0.1 2'd0;
+        pass_s1 <= #0.1 2'd0;
+            pass_s2 <= #0.1 2'd0;
+            pass_s3 <= #0.1 2'd0;
     end
     else begin
         pass_s1 <= #0.1 (resize_cycle < 3'd4) ? resize_cycle[1:0] : pass_s1;
@@ -208,7 +215,8 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 
-wire [3:0] px_base = {pass_s1, 2'b0};   // 0, 4, 8, 12 per pass
+wire [3:0] px_base;
+    assign px_base = {pass_s1, 2'b0};   // 0, 4, 8, 12 per pass
 
 // ============ 批量写触发 ============
 // result_valid_pos: 计算完成 (result_val 已稳定多周期)
@@ -580,7 +588,8 @@ assign din_ready = trans_status[0];
 // ============ 读数据就绪检测: 两行独立计数 ============
 // dbeat_cnt_0: 第一行 (~rd_second), gen_status 或 rd_second_pos 时清零
 // dbeat_cnt_1: 第二行 ( rd_second), rd_second_pos 时清零
-reg [15:0] dbeat_cnt_0, dbeat_cnt_1;
+reg [15:0] dbeat_cnt_0;
+    reg [15:0] dbeat_cnt_1;
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin

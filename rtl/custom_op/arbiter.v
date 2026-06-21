@@ -179,9 +179,12 @@ module arbiter (
         end
     end
 
-    wire gather_grant   = (grant == GATHER);
-    wire hadamard_grant = (grant == HADAMARD);
-    wire resize_grant   = (grant == RESIZE);
+    wire gather_grant;
+    wire hadamard_grant;
+    wire resize_grant;
+    assign gather_grant   = (grant == GATHER);
+    assign hadamard_grant = (grant == HADAMARD);
+    assign resize_grant   = (grant == RESIZE);
 
     // ============ DMA信号选择 ============
 
