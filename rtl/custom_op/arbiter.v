@@ -51,6 +51,7 @@ module arbiter (
     input                 resize_din_ready   ,
     input        [511:0]  resize_dout        ,
     input                 resize_dout_valid  ,
+    output                resize_dout_ready  ,
     output                resize_rd_done    ,
     output                resize_wr_done    ,
     input                 resize_comp_done   ,

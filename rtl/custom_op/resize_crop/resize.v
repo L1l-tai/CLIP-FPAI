@@ -46,6 +46,11 @@ module resize (
     input                   clr_dbeat_1,   // 进入 RD_SECONE 同拍清零 dbeat_cnt_1
     input                   fifo_drain,
 
+    output      [31:0]      dbg_rs_p0     ,   // debug: rs_regs[0]   行y P0
+    output      [31:0]      dbg_rs_p4     ,   // debug: rs_regs[4]   行y P4
+    output      [31:0]      dbg_rs2_p0    ,   // debug: rs_regs_2[0] 行y+1 P0
+    output      [31:0]      dbg_rs2_p4    ,   // debug: rs_regs_2[4] 行y+1 P4
+
     input                   clk           ,
     input                   rst_n
 );
@@ -54,6 +59,36 @@ reg     [31 : 0]            rs_regs   [15:0];
 reg     [31 : 0]            rs_regs_2 [15:0];
 reg     [1 : 0]             rd_cnt;
 reg     [1 : 0]             wr_cnt;
+
+// RESIZE 开始时快照 rs_regs / rs_regs_2 (对齐 hadamard: 计算期间源数据不变)
+reg     [31:0]              rs_regs_s   [15:0];
+reg     [31:0]              rs_regs_2_s [15:0];
+reg                         resize_status_r;
+wire                        resize_status_pos;
+
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        resize_status_r <= #0.1 1'b0;
+    else
+        resize_status_r <= #0.1 resize_status;
+end
+assign resize_status_pos = resize_status && ~resize_status_r;
+
+genvar si;
+generate
+    for (si = 0; si < 16; si = si + 1) begin: rs_snapshot
+        always @(posedge clk or negedge rst_n) begin
+            if (!rst_n) begin
+                rs_regs_s[si]   <= #0.1 32'd0;
+                rs_regs_2_s[si] <= #0.1 32'd0;
+            end
+            else if (resize_status_pos) begin
+                rs_regs_s[si]   <= #0.1 rs_regs[si];
+                rs_regs_2_s[si] <= #0.1 rs_regs_2[si];
+            end
+        end
+    end
+endgenerate
 
 // 坐标计算寄存器
 reg     [7:0]               data_valid_reg;
@@ -108,7 +143,7 @@ generate
             if (!rst_n) begin
                 x_delta_reg[j] <= #0.1 16'd0;
             end
-            else if (rd_second_pos) begin
+            else if (gen_status) begin
                 x_delta_reg[j] <= #0.1 x_delta[j * 16 +: 16];
             end
             else begin
@@ -123,7 +158,7 @@ always @(posedge clk or negedge rst_n) begin
         data_valid_reg <= #0.1 8'd0;
         y_delta_reg <= #0.1 8'd0;
     end
-    else if (rd_second_pos) begin
+    else if (gen_status) begin
         data_valid_reg <= #0.1 data_valid;
         y_delta_reg <= #0.1 y_delta;
     end
@@ -380,10 +415,10 @@ generate
     for (px = 0; px < 4; px = px + 1) begin: pixel_idx
         wire [3:0] px_full = px_base + px[1:0];
         wire       is_valid = (px_full < data_valid);
-        assign q11_val_c[px] = is_valid ? rs_regs[src_idx[px_full]] : 32'd0;
-        assign q12_val_c[px] = is_valid ? rs_regs[(src_idx[px_full] < 15) ? (src_idx[px_full] + 4'd1) : 4'd15] : 32'd0;
-        assign q21_val_c[px] = is_valid ? rs_regs_2[src_idx[px_full]] : 32'd0;
-        assign q22_val_c[px] = is_valid ? rs_regs_2[(src_idx[px_full] < 15) ? (src_idx[px_full] + 4'd1) : 4'd15] : 32'd0;
+        assign q11_val_c[px] = is_valid ? rs_regs_s[src_idx[px_full]] : 32'd0;
+        assign q12_val_c[px] = is_valid ? rs_regs_s[(src_idx[px_full] < 15) ? (src_idx[px_full] + 4'd1) : 4'd15] : 32'd0;
+        assign q21_val_c[px] = is_valid ? rs_regs_2_s[src_idx[px_full]] : 32'd0;
+        assign q22_val_c[px] = is_valid ? rs_regs_2_s[(src_idx[px_full] < 15) ? (src_idx[px_full] + 4'd1) : 4'd15] : 32'd0;
     end
 endgenerate
 
@@ -631,23 +666,28 @@ end
 assign comp_done_pos = comp_done & ~comp_done_reg;
 assign force_rd = (comp_done_pos || fifo_drain) && !fifo_empty && !fifo_flush_ready;
 
-// dout 从 FIFO 读取 (替代原来的 result_val 拼接)
-// 保持 dout_valid 直到 DMA 握手完成 (dout_ready 拉高)
-reg dout_hold;
+// ---- 输出路径: 对齐 gather 的脉冲式握手 ----
+// gather: dout_rs = din; dout_valid_rs = din_valid && din_ready
+// resize: dout_rs = fifo_rd_data; dout_valid_rs = (fifo_rd_valid || dout_req) && trans_status[1]
+// dout_req: fifo_rd_valid 置位, AVR 捕获后自清; 保证每拍只捕获一次, 无重复
+reg dout_req;
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n)
-        dout_hold <= #0.1 1'b0;
-    else if (fifo_rd_valid && trans_status[1])
-        dout_hold <= #0.1 1'b1;
-    else if (dout_hold && dout_ready)
-        dout_hold <= #0.1 1'b0;
+        dout_req <= #0.1 1'b0;
+	    else if (dout_valid_rs && dout_ready_rs)
+	        dout_req <= #0.1 1'b0;          // CLEAR优先: 捕获同拍fifo_rd_valid仍为高
+	    else if (fifo_rd_valid && trans_status[1])
+	        dout_req <= #0.1 1'b1;
 end
 
 assign dout_rs = fifo_rd_data;
-assign dout_valid_rs  = dout_hold;
+assign dout_valid_rs = (fifo_rd_valid || dout_req) && trans_status[1];
 assign resize_done = result_valid;
-
+assign dbg_rs_p0  = rs_regs_s[0];
+assign dbg_rs_p4  = rs_regs_s[4];
+assign dbg_rs2_p0 = rs_regs_2_s[0];
+assign dbg_rs2_p4 = rs_regs_2_s[4];
 // 实例化 AVR 寄存器切片模块 (avr_rs)
 avr_rs #(.DW(512)) U_avr_rs(
     .m_data      ( dout_rs         ),

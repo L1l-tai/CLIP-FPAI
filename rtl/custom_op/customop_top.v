@@ -190,6 +190,8 @@ module customop_top(
     wire              clr_dbeat_1_rs;
     wire              rd_data_ready_rs_0; // 第一行读数据到达
     wire              rd_data_ready_rs_1; // 第二行读数据到达
+    wire [31:0]       dbg_rs_p0, dbg_rs_p4;     // debug: 输入P0/P4
+    wire [31:0]        dbg_rs2_p0, dbg_rs2_p4;   // debug: 输出P0/P4
 
     //Arbiter signals
     wire [31:0]       arb_arbase_gather;
@@ -282,11 +284,11 @@ module customop_top(
           .wwidth_rs      ( wwidth_rs        ) ,
           .wheight_rs     ( wheight_rs       ) ,
           .comp_done_rs   ( comp_done_rs_cross ) ,
+          .rfu_rreg0     ( dbg_rs_p0        ),
+          .rfu_rreg1     ( dbg_rs_p4        ),
+          .rfu_rreg2     ( dbg_rs2_p0       ),
+          .rfu_rreg3     ( dbg_rs2_p4       ),
           
-          .rfu_rreg0     ( 32'd0            ),
-          .rfu_rreg1     ( 32'd0            ),
-          .rfu_rreg2     ( 32'd0            ),
-          .rfu_rreg3     ( 32'd0            ),
           .rfu_rreg4     ( 32'd0            ),                                              
           .rfu_rreg5     ( 32'd0            ),                                              
           .rfu_rreg6     ( 32'd0            ),                                              
@@ -415,6 +417,7 @@ module customop_top(
       .resize_din_ready   ( rs_din_ready        ),
       .resize_dout        ( rs_dout             ),
       .resize_dout_valid  ( rs_dout_valid       ),
+      .resize_dout_ready  ( rs_dout_ready       ),
       .resize_rd_done     ( arb_rd_done_rs      ),
       .resize_wr_done     ( arb_wr_done_rs      ),
       .resize_comp_done   ( comp_done_rs        ),
@@ -778,6 +781,10 @@ module customop_top(
       .fifo_flush_ready ( fifo_flush_ready_rs ),
       .fifo_empty       ( fifo_empty_rs       ),
       .fifo_drain       ( fifo_drain_rs       ),
+          .dbg_rs_p0        ( dbg_rs_p0        ),
+          .dbg_rs_p4        ( dbg_rs_p4        ),
+          .dbg_rs2_p0       ( dbg_rs2_p0       ),
+          .dbg_rs2_p4       ( dbg_rs2_p4       ),
 
       .clk              ( clk              ),
       .rst_n            ( rst_n_1          )

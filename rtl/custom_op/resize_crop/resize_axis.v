@@ -178,8 +178,8 @@ module resize_axis (
     // y_delta: ratioed_y_full Q1.23.8 fraction在 bit[7:0]
     // y_bias:  ratioed_y_full Q1.23.8 integer在 bit[30:8]
     // 第一级: y_delta, y_bias, current_row_y, next_bias乘法
-    assign y_delta_next = (pixel_cnt == 16'b0) ? ratioed_y_full[7:0] : y_delta;
-    assign y_bias_next = (pixel_cnt == 16'b0) ? ratioed_y_full[23:8] : y_bias;
+    assign y_delta_next = (pixel_cnt == 16'b0) ? ratioed_y_full[7:0]  : y_delta;
+    assign y_bias_next  = (pixel_cnt == 16'b0) ? ratioed_y_full[23:8] : y_bias;
     assign current_row_y_next = (pixel_cnt_next == crop_size) ? current_row_y + 1 : current_row_y;
 
     // ============ 第二级计算 ============
@@ -330,22 +330,23 @@ module resize_axis (
         end
     end
     
-    // 轴计算完成信号
+    // axis_done 延迟1拍: 保证 y_bias 拿到 y_bias_next_r 更新值后再通知FSM
     reg axis_done_r;
+    reg axis_done_r2;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            axis_done_r <= #0.1 1'b0;
-            y_bias      <= #0.1 16'd0;
-        end
-        else if (axis_cal_status) begin
-            axis_done_r <= #0.1 1'b1;
-            y_bias      <= #0.1 y_bias_next_r;  // 提前1拍, 消除gen_status竞争
+            axis_done_r  <= #0.1 1'b0;
+            axis_done_r2 <= #0.1 1'b0;
+            y_bias       <= #0.1 16'd0;
         end
         else begin
-            axis_done_r <= #0.1 1'b0;
+            axis_done_r  <= #0.1 axis_cal_status;
+            axis_done_r2 <= #0.1 axis_done_r;
+            if (axis_cal_status)
+                y_bias <= #0.1 y_bias_next_r;  // T0取旧值 → T1锁存新值
         end
     end
 
-    assign axis_done = axis_done_r;
+    assign axis_done = axis_done_r2;
 
 endmodule

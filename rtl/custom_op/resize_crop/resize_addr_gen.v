@@ -61,7 +61,6 @@ module resize_addr_gen(
     // ============ 连线声明 ============
     wire       rd_pos;
     wire       wr_pos;
-    wire       row_changed;
     wire [15:0] addr_rd_cnt;
     wire [15:0] rs_num;
     wire [31:0] arbase_offset_c;
@@ -76,7 +75,13 @@ module resize_addr_gen(
     assign wr_pos = ~trans_status_reg[1] & trans_status[1];
 
     // ============ 行切换检测 ============
-    assign row_changed = (y_bias != y_bias_prev);
+    reg row_changed_r;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            row_changed_r <= #0.1 1'b0;
+        else if (gen_status)
+            row_changed_r <= #0.1 (y_bias != y_bias_prev);  // gen_status 时锁存, 消除比较器毛刺
+    end
 
     // ============ 常数计算 ============
     wire [15:0] dst_blocks_per_row;
@@ -115,9 +120,9 @@ module resize_addr_gen(
     // DSP 乘法 (Stage3 锁存) — 路径: reg(加法结果)→DSP→reg
     assign y_bias_x_rwidth    = y_bias_sum_r * rwidth_bytes;
     // 代数化简: (y_bias_sum+1)*rwidth = y_bias_x_rwidth_r + rwidth_bytes (省1 DSP)
-    assign y_bias_p1_x_rwidth = y_bias_x_rwidth_r + {14'd0, rwidth_bytes};
+    assign y_bias_p1_x_rwidth = y_bias_x_rwidth + {14'd0, rwidth_bytes};
 
-    assign addr_rd_cnt      = (gen_status && row_changed) ? 16'd0 : rs_rd_cnt;
+    assign addr_rd_cnt      = (gen_status && row_changed_r) ? 16'd0 : rs_rd_cnt;
     assign arbase_offset_c  = crop_off_x_b + (addr_rd_cnt << RS_SHIFT);
 
     // 地址累加 (Stage4 锁存) — 路径: reg+reg+comb→reg
@@ -144,7 +149,7 @@ module resize_addr_gen(
         else begin
             if (gen_status) begin
                 y_bias_prev <= #0.1 y_bias;
-                if (row_changed)
+                if (row_changed_r)
                     rs_rd_cnt <= #0.1 16'd0;
             end
             if (rd_pos & ~rd_second) begin
@@ -204,6 +209,7 @@ module resize_addr_gen(
             end
         end
     end
+
 
     // ============ 第三级流水线 (pipe_valid_2 → output) ============
     always @(posedge clk or negedge rst_n) begin
