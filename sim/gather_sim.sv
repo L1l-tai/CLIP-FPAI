@@ -131,7 +131,7 @@ module gather_sim;
             itf_rdata      <= 512'd0;
             r_latency_cnt  <= 0;
         end else begin
-            if (itf_rvalid && itf_rready && r_queue_cnt > 0) begin
+            if (itf_rvalid && itf_rready) begin
                 itf_rvalid    <= 1'b0;
                 r_busy        <= 1'b0;
                 r_latency_cnt <= 0;

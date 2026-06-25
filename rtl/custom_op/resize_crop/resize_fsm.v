@@ -67,7 +67,6 @@ localparam  RESIZE = 4'd6        ;
 localparam  WR_PIPELINE = 4'd7   ;
 localparam  WR_ONLY = 4'd8       ;
 localparam  COMP_DONE = 4'd9     ;
-localparam  WAIT_DRAIN = 4'd10   ;  // 源块处理完毕，排空 FIFO 残余
 
 reg         rd_done_reg;
 reg         rd_done_reg_1;
@@ -98,6 +97,7 @@ always @(posedge clk or negedge rst_n) begin
 end
 wire enter_rd_secone;
 assign enter_rd_secone = (state == RD_SECONE) && (prev_state != RD_SECONE);
+wire   enter_wr_only   = (state == WR_ONLY)   && (prev_state != WR_ONLY);
 assign clr_dbeat_1 = enter_rd_secone;
 
 always @(posedge clk or negedge rst_n) begin
@@ -155,7 +155,7 @@ always @(posedge clk or negedge rst_n) begin
         rd_done_reg <= #0.1 1'b0;
     else if(rd_done)
         rd_done_reg <= #0.1 1'b1;
-    else if(state == GEN_ADDR || state == WAIT_DRAIN)
+    else if(state == GEN_ADDR)
         rd_done_reg <= #0.1 1'b0;
     else
         rd_done_reg <= #0.1 rd_done_reg;
@@ -185,7 +185,7 @@ always @(posedge clk or negedge rst_n) begin
         wr_done_reg <= #0.1 1'b0;
     else if(wr_done)
         wr_done_reg <= #0.1 1'b1;
-    else if(state == GEN_ADDR || state == WAIT_DRAIN)
+    else if(state == GEN_ADDR || enter_wr_only)
         wr_done_reg <= #0.1 1'b0;
     else
         wr_done_reg <= #0.1 wr_done_reg;
@@ -250,7 +250,7 @@ always @(*) begin
         end
         GEN_ADDR: begin
             if (src_done) begin
-                next_state = WAIT_DRAIN;
+                next_state = fifo_empty ? COMP_DONE : WR_ONLY;
             end
             else if (rs_addr_gen_valid) begin
                 if (rs_first_line)
@@ -274,7 +274,7 @@ always @(*) begin
         end
         RESIZE: begin
             if (resize_done) begin
-                next_state = src_done ? WAIT_DRAIN : AXIS_CAL;
+                next_state = src_done ? (fifo_empty ? COMP_DONE : WR_ONLY) : AXIS_CAL;
             end
         end
         WR_PIPELINE: begin
@@ -284,14 +284,8 @@ always @(*) begin
         end
         WR_ONLY: begin
             if (wr_done_reg) begin
-                next_state = WAIT_DRAIN;  // 回 WAIT_DRAIN 判断是否排空完毕
+                next_state = fifo_empty ? COMP_DONE : WR_ONLY;
             end
-        end
-        WAIT_DRAIN: begin
-            if (fifo_empty)
-                next_state = COMP_DONE;
-            else
-                next_state = WR_ONLY;
         end
         COMP_DONE: begin
             next_state = IDLE;
@@ -446,22 +440,7 @@ always @(posedge clk or negedge rst_n) begin
                 axis_pre_cal <= #0.1 1'b0;
                 axis_cal_status <= #0.1 1'b0;
                 resize_status <= #0.1 1'b0;
-                fifo_drain <= #0.1 1'b1;       // drain 模式下允许 force_rd
-            end
-            WAIT_DRAIN: begin
-                // 决策状态: 有数据→WR_ONLY, 空→COMP_DONE
-                arbase <= #0.1 32'b0;
-                arsize <= #0.1 16'b0;
-                awbase <= #0.1 awbase_comb;
-                awsize <= #0.1 awsize_rs_gen_reg;
-                comp_done <= #0.1 1'b0;
-                trans_status <= #0.1 2'b00;    // WR_ONLY 产生 0→1 沿触发 wr_pos
-                rd_second <= #0.1 1'b0;
-                gen_status <= #0.1 1'd0;
-                axis_pre_cal <= #0.1 1'b0;
-                axis_cal_status <= #0.1 1'b0;
-                resize_status <= #0.1 1'b0;
-                fifo_drain <= #0.1 1'b0;
+                fifo_drain <= #0.1 1'b0;       // WR_ONLY 用正常 read, 不强制排空
             end
             COMP_DONE: begin
                 arbase <= #0.1 32'b0;

@@ -31,10 +31,15 @@ def read_blocks(filepath: str) -> list:
     return blocks
 
 
-def blocks_to_image(blocks: list, width: int) -> np.ndarray:
+def blocks_to_image(blocks: list, width: int, is_input: bool = False) -> np.ndarray:
     """
     Convert list of 512-bit blocks → RGB image (H×W×3, uint8).
-    Auto-detect height from block count and width.
+
+    .mem format (write_mem_file): buf[63] at hex[0:1], buf[0] at hex[126:127].
+    So int(line,16) has pixel 0 at LSB. Read via blk >> (i*32).
+
+    Input format  {X, G, R, B}: R at [15:8], G at [23:16], B at [7:0]
+    Output format {0, R, G, B}: R at [23:16], G at [15:8], B at [7:0]
     """
     blocks_per_row = (width + PIXELS_PER_BLOCK - 1) // PIXELS_PER_BLOCK
     height = len(blocks) // blocks_per_row
@@ -53,6 +58,8 @@ def blocks_to_image(blocks: list, width: int) -> np.ndarray:
                 if col >= width:
                     break
                 px = (blk >> (i * 32)) & 0xFFFFFFFF
+                # Input DDR [B,G,R,X] and output DDR [B,G,R,0] both map to
+                # hex {X,R,G,B} per pixel → R=[23:16], G=[15:8], B=[7:0]
                 img[row, col, 0] = (px >> 16) & 0xFF   # R
                 img[row, col, 1] = (px >> 8) & 0xFF    # G
                 img[row, col, 2] = px & 0xFF            # B
@@ -70,6 +77,8 @@ def main():
                         help='Image height in pixels (auto-detect if not given)')
     parser.add_argument('--output', '-o', default=None,
                         help='Save to image file (otherwise display window)')
+    parser.add_argument('--input', action='store_true',
+                        help='File is RTL input format (R/G swapped vs output)')
     args = parser.parse_args()
 
     # Read data
@@ -90,7 +99,7 @@ def main():
         print(f"Auto height: {height} rows ({blocks_per_row} blocks/row)")
 
     # Convert to image
-    img = blocks_to_image(blocks, width)
+    img = blocks_to_image(blocks, width, is_input=args.input)
     img = img[:height, :width, :]  # trim to exact dimensions
     print(f"Image: {img.shape[1]}×{img.shape[0]}, "
           f"R range [{img[:,:,0].min()},{img[:,:,0].max()}], "

@@ -46,11 +46,6 @@ module resize (
     input                   clr_dbeat_1,   // 进入 RD_SECONE 同拍清零 dbeat_cnt_1
     input                   fifo_drain,
 
-    output      [31:0]      dbg_rs_p0     ,   // debug: rs_regs[0]   行y P0
-    output      [31:0]      dbg_rs_p4     ,   // debug: rs_regs[4]   行y P4
-    output      [31:0]      dbg_rs2_p0    ,   // debug: rs_regs_2[0] 行y+1 P0
-    output      [31:0]      dbg_rs2_p4    ,   // debug: rs_regs_2[4] 行y+1 P4
-
     input                   clk           ,
     input                   rst_n
 );
@@ -684,10 +679,6 @@ end
 assign dout_rs = fifo_rd_data;
 assign dout_valid_rs = (fifo_rd_valid || dout_req) && trans_status[1];
 assign resize_done = result_valid;
-assign dbg_rs_p0  = rs_regs_s[0];
-assign dbg_rs_p4  = rs_regs_s[4];
-assign dbg_rs2_p0 = rs_regs_2_s[0];
-assign dbg_rs2_p4 = rs_regs_2_s[4];
 // 实例化 AVR 寄存器切片模块 (avr_rs)
 avr_rs #(.DW(512)) U_avr_rs(
     .m_data      ( dout_rs         ),

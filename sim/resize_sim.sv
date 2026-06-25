@@ -4,10 +4,10 @@ module resize_sim;
 
     localparam CLK_PERIOD = 10;
     localparam RA_CLK_PERIOD = 10;
-    localparam SRC_WIDTH = 64;
-    localparam SRC_HEIGHT = 48;
-    localparam DST_WIDTH = 32;
-    localparam DST_HEIGHT = 32;
+    localparam SRC_WIDTH = 640;
+    localparam SRC_HEIGHT = 480;
+    localparam DST_WIDTH = 224;
+    localparam DST_HEIGHT = 224;
     localparam CROP_ENABLE = 1;
     localparam CROP_SIZE = (SRC_WIDTH < SRC_HEIGHT) ? SRC_WIDTH : SRC_HEIGHT;
     localparam [15:0] RESIZE_RATIO_LESS = (DST_WIDTH << 12) / CROP_SIZE;
@@ -15,7 +15,8 @@ module resize_sim;
     localparam SRC_BLOCKS_PER_ROW = (SRC_WIDTH + 15) / 16;
     localparam DST_BLOCKS_PER_ROW = (DST_WIDTH + 15) / 16;
     localparam SRC_BASE_ADDR = 32'h0000_2000;
-    localparam DST_BASE_ADDR = 32'h0001_0000;
+    localparam DST_BASE_ADDR = 32'h0014_0000;  // 640x480 need ~22K blocks, leave gap
+    localparam MEM_DEPTH = 32768;              // 32K entries × 64B = 2MB
 
     reg clk;
     reg ra_clk;
@@ -44,37 +45,6 @@ module resize_sim;
     wire rs_comp_done;
     reg  [31:0] itf_ra_araddr;
     assign rs_comp_done = U_customop_top.comp_done_rs;
-
-    // 诊断 RD_SECONE 持续时间
-    wire [3:0]  rs_fsm_state;
-    assign rs_fsm_state = U_customop_top.U_resize_fsm.state;
-    wire        rs_rd_second;
-    assign rs_rd_second = U_customop_top.U_resize_fsm.rd_second;
-    wire        rs_rd_done_reg;
-    wire        rs_rd_ready_0;
-    wire        rs_rd_ready_1;
-    wire [15:0] rs_dbeat_0;
-    wire [15:0] rs_dbeat_1;
-    assign rs_rd_done_reg = U_customop_top.U_resize_fsm.rd_done_reg;
-    assign rs_rd_ready_0  = U_customop_top.rd_data_ready_rs_0;
-    assign rs_rd_ready_1  = U_customop_top.rd_data_ready_rs_1;
-    assign rs_dbeat_0     = U_customop_top.U_resize.dbeat_cnt_0;
-    assign rs_dbeat_1     = U_customop_top.U_resize.dbeat_cnt_1;
-
-    reg [3:0] rs_state_r;
-    always @(posedge clk) rs_state_r <= rs_fsm_state;
-    wire rs_enter_rd_secone;
-    assign rs_enter_rd_secone = (rs_fsm_state == 4'd5) && (rs_state_r != 4'd5);
-
-    always @(posedge clk) begin
-        if (rs_enter_rd_secone)
-            $display("TB: *** ENTER RD_SECONE: dbeat_0=%d dbeat_1=%d rd_ready0=%b rd_ready1=%b rd_done_reg=%b ***",
-                     rs_dbeat_0, rs_dbeat_1, rs_rd_ready_0, rs_rd_ready_1, rs_rd_done_reg);
-        if (rs_fsm_state == 4'd5 && rs_state_r != 4'd5)
-            ;  // already printed above
-        else if (rs_fsm_state == 4'd5 && rs_rd_ready_1)
-            $display("TB: *** RD_SECONE rd_ready_1=1, about to leave: dbeat_1=%d ***", rs_dbeat_1);
-    end
 
     customop_top U_customop_top (
         .itf_ra_awaddr     (itf_ra_awaddr),
@@ -109,7 +79,7 @@ module resize_sim;
     initial begin clk = 0; forever #(CLK_PERIOD/2) clk = ~clk; end
     initial begin ra_clk = 0; forever #(RA_CLK_PERIOD/2) ra_clk = ~ra_clk; end
 
-    reg [511:0] mem [0:4095];
+    reg [511:0] mem [0:MEM_DEPTH-1];
     integer i;
 
     function automatic integer get_mem_index;
@@ -149,7 +119,7 @@ module resize_sim;
         end
     end
 
-    // R: burst 模式, rvalid 跨 beat 保持高
+    // R: burst 模式, rvalid �? beat 保持�?
     always @(posedge clk) begin
         if (!rst_n) begin
             itf_rvalid <= 1'b0; itf_rdata <= 512'd0; r_queue_rd_ptr <= 0;
@@ -182,7 +152,7 @@ module resize_sim;
         end
     end
 
-    // AW: 脉冲式 ready
+    // AW: 脉冲�? ready
     always @(posedge clk) begin
         if (!rst_n) begin
             itf_awready <= 1'b0;
@@ -208,9 +178,9 @@ module resize_sim;
 
         #100; rst_n = 1; ra_rst_n = 1; #100;
 
-        for (i = 0; i < 4096; i = i + 1) mem[i] = 512'd0;
+        for (i = 0; i < MEM_DEPTH; i = i + 1) mem[i] = 512'd0;
 
-        $readmemh("resize-input-src.mem", mem, get_mem_index(SRC_BASE_ADDR));
+        $readmemh("../test/input-data/resize-input-640x480.mem", mem, get_mem_index(SRC_BASE_ADDR));
         $display("Loaded source image (%dx%d)", SRC_WIDTH, SRC_HEIGHT);
 
         $display("Configuring Resize Registers (CROP=%d)...", CROP_ENABLE);
@@ -232,7 +202,7 @@ module resize_sim;
         repeat (10) @(posedge clk);
         $display("DMA Transfer Completed.");
 
-        write_mem_to_file("resize-output.mem", DST_BASE_ADDR, DST_HEIGHT * DST_BLOCKS_PER_ROW);
+        write_mem_to_file("resize-output-640x480.mem", DST_BASE_ADDR, DST_HEIGHT * DST_BLOCKS_PER_ROW);
         $display("RESIZE SIMULATION COMPLETED");
         #100; $finish;
     end

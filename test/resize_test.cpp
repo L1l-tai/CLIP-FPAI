@@ -28,6 +28,77 @@ using namespace std::chrono_literals;
 namespace fs = std::filesystem;
 using namespace fpai;
 
+// ============================================================
+// 模式切换: 注释掉用 64x48 测试, 取消注释用 640x480 真实图像
+// ============================================================
+#define USE_REAL_IMAGE
+
+// ---- 图像 → .mem 转换 ----
+static void image_to_mem(const std::string& img_path, const std::string& mem_path,
+                          int target_w, int target_h)
+{
+    cv::Mat img = cv::imread(img_path, cv::IMREAD_COLOR);
+    if (img.empty()) {
+        std::cerr << "Failed to load image: " << img_path << std::endl;
+        return;
+    }
+    cv::Mat resized;
+    cv::resize(img, resized, cv::Size(target_w, target_h), 0, 0, cv::INTER_LINEAR);
+
+    int blocks_per_row = (target_w + 15) / 16;
+    int total_bytes = blocks_per_row * 64 * target_h;
+    std::vector<int8_t> buf(total_bytes, 0);
+
+    for (int y = 0; y < target_h; y++) {
+        for (int x = 0; x < target_w; x++) {
+            cv::Vec3b bgr = resized.at<cv::Vec3b>(y, x);
+            int block = x / 16;
+            int px    = x % 16;
+            int off   = y * blocks_per_row * 64 + block * 64 + px * 4;
+            // RTL input order: [B, G, R, X]
+            // [7:0]=B→blue, [15:8]=G→green, [23:16]=R→red
+            buf[off + 0] = (int8_t)bgr[0];     // B → [7:0]
+            buf[off + 1] = (int8_t)bgr[1];     // G → [15:8]
+            buf[off + 2] = (int8_t)bgr[2];     // R → [23:16]
+            buf[off + 3] = (int8_t)0x00;       // X → [31:24]
+        }
+    }
+    write_mem_file(mem_path, buf.data(), total_bytes);
+    std::cout << "Image " << target_w << "x" << target_h
+              << " -> " << mem_path << " (" << total_bytes << " bytes)" << std::endl;
+}
+
+// ---- .mem → 图像转换 ----
+static void mem_to_image(const std::string& mem_path, const std::string& img_path,
+                          int width, int height)
+{
+    int blocks_per_row = (width + 15) / 16;
+    int total_bytes = blocks_per_row * 64 * height;
+    std::vector<int8_t> buf(total_bytes, 0);
+    int loaded = read_mem_file(mem_path, buf.data(), total_bytes);
+    if (loaded < 0) {
+        std::cerr << "Failed to load " << mem_path << std::endl;
+        return;
+    }
+    cv::Mat img(height, width, CV_8UC3);
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            int block = x / 16;
+            int px    = x % 16;
+            int off   = y * blocks_per_row * 64 + block * 64 + px * 4;
+            // DDR [B, G, R, X] → OpenCV BGR
+            img.at<cv::Vec3b>(y, x) = cv::Vec3b(
+                (uint8_t)buf[off + 0],  // B
+                (uint8_t)buf[off + 1],  // G
+                (uint8_t)buf[off + 2]   // R
+            );
+        }
+    }
+    cv::imwrite(img_path, img);
+    std::cout << "Output image " << width << "x" << height
+              << " -> " << img_path << std::endl;
+}
+
 int main(int argc, char *argv[])
 {
     std::string device_url = "axi://zg330aiu?npu=0x40000000&dma=0x80000000";
@@ -40,27 +111,42 @@ int main(int argc, char *argv[])
     std::cout << "Resize version is " << std::hex << "0x" << version << std::dec << std::endl;
 
     // ============================================================
-    // 参数: 不使用 crop, 简单恒等缩放或缩小
+    // 参数
     // ============================================================
-    const int SRC_WIDTH = 64;
-    const int SRC_HEIGHT = 64;
-    const int DST_WIDTH = 32;
+#ifdef USE_REAL_IMAGE
+    // CLIP ViT-B/32 标准预处理: 640x480 → 中心裁剪 480x480 → 缩放 224x224
+    // crop_off_x=80, 16像素对齐 → DMA 地址 64B 对齐
+    const int SRC_WIDTH  = 640;
+    const int SRC_HEIGHT = 480;
+    const int DST_WIDTH  = 224;
+    const int DST_HEIGHT = 224;
+    const int CROP_ENABLE = 1;
+    const int CROP_SIZE = (SRC_WIDTH < SRC_HEIGHT) ? SRC_WIDTH : SRC_HEIGHT;  // 480
+
+    uint32_t resize_ratio_less    = (DST_WIDTH  << 12) / CROP_SIZE;   // Q1.3.12
+    uint32_t resize_ratio_greater = (CROP_SIZE  << 8)  / DST_WIDTH;  // Q1.7.8
+
+    int src_blocks_per_row = (SRC_WIDTH  + 15) / 16;   // 40
+    int dst_blocks_per_row = (DST_WIDTH  + 15) / 16;   // 14
+    int src_data_size = src_blocks_per_row * 64 * SRC_HEIGHT;  // 1228800
+    int dst_data_size = dst_blocks_per_row * 64 * DST_HEIGHT;  // 200704
+#else
+    // 调试用: 64x48 → 32x32, CROP_ENABLE=1
+    const int SRC_WIDTH  = 64;
+    const int SRC_HEIGHT = 48;
+    const int DST_WIDTH  = 32;
     const int DST_HEIGHT = 32;
+    const int CROP_ENABLE = 1;
+    const int CROP_SIZE = (SRC_WIDTH < SRC_HEIGHT) ? SRC_WIDTH : SRC_HEIGHT;  // 48
 
-    // 无 crop
-    const int CROP_ENABLE = 0;
+    uint32_t resize_ratio_less    = (DST_WIDTH  << 12) / CROP_SIZE;   // Q1.3.12
+    uint32_t resize_ratio_greater = (CROP_SIZE  << 8)  / DST_WIDTH;  // Q1.7.8
 
-    // 每 64 字节块放 16 个 32-bit 像素
-    int src_blocks_per_row = (SRC_WIDTH + 15) / 16;  // = 4
-    int dst_blocks_per_row = (DST_WIDTH + 15) / 16;  // = 2
-    int src_row_size = src_blocks_per_row * 64;   // 256 bytes/row
-    int dst_row_size = dst_blocks_per_row * 64;   // 128 bytes/row
-    int src_data_size = src_row_size * SRC_HEIGHT;   // 16384
-    int dst_data_size = dst_row_size * DST_HEIGHT;   // 4096
-
-    // Q 格式缩放比
-    uint32_t resize_ratio_less    = (DST_WIDTH  << 12) / SRC_WIDTH;   // Q1.3.12
-    uint32_t resize_ratio_greater = (SRC_WIDTH  << 8)  / DST_WIDTH;  // Q1.7.8
+    int src_blocks_per_row = (SRC_WIDTH  + 15) / 16;   // 4
+    int dst_blocks_per_row = (DST_WIDTH  + 15) / 16;   // 2
+    int src_data_size = src_blocks_per_row * 64 * SRC_HEIGHT;  // 12288
+    int dst_data_size = dst_blocks_per_row * 64 * DST_HEIGHT;  // 4096
+#endif
 
     // padding 防水
     const int PAD_SIZE = 4096;
@@ -104,24 +190,28 @@ int main(int argc, char *argv[])
     }
     std::cout << "  All " << total_size << " bytes filled" << std::endl;
 
-    // ============================================================
-    // 生成已知源图像: pixel(x,y) = {0, R=x, G=y, B=0}
-    // 逐像素填入, 格式: {8'b0, R[7:0], G[7:0], B[7:0]}
-    // ============================================================
-    std::cout << "\n=== Generating source image (" << SRC_WIDTH << "x"
-              << SRC_HEIGHT << ") ===" << std::endl;
-    for (int y = 0; y < SRC_HEIGHT; y++) {
-        for (int x = 0; x < SRC_WIDTH; x++) {
-            int row_off = y * src_row_size;
-            int px_off  = x * 4;
-            uint32_t pixel = (0 << 24) | ((x & 0xFF) << 16) | ((y & 0xFF) << 8) | 0x00;
-            ((uint32_t*)(src_buf.get() + row_off + px_off))[0] = pixel;
-        }
+#ifdef USE_REAL_IMAGE
+    // 从真实图像生成 .mem 并加载
+    const char* IMAGE_PATH = (argc > 1) ? argv[1] : "qtset/test_image.jpg";
+    std::cout << "Input image: " << IMAGE_PATH << std::endl;
+    const char* MEM_PATH   = "test/input-data/resize-input-640x480.mem";
+    image_to_mem(IMAGE_PATH, MEM_PATH, SRC_WIDTH, SRC_HEIGHT);
+    int loaded = read_mem_file(MEM_PATH, src_buf.get(), src_data_size);
+    if (loaded < 0) {
+        std::cerr << "Failed to load " << MEM_PATH << std::endl;
+        return -1;
     }
+    std::cout << "Loaded " << loaded << " bytes from " << MEM_PATH << std::endl;
+#else
+    // 从 .mem 文件加载源数据
+    int loaded = read_mem_file("test/input-data/resize-input-src.mem", src_buf.get(), src_data_size);
+    if (loaded < 0) {
+        std::cerr << "Failed to load resize-input-src.mem" << std::endl;
+        return -1;
+    }
+    std::cout << "Loaded " << loaded << " bytes from resize-input-src.mem" << std::endl;
+#endif
     mem_chunk.write(src_offset, (char*)src_buf.get(), src_data_size);
-    uint32_t first_px = ((uint32_t*)src_buf.get())[0];
-    std::cout << "  First pixel = 0x" << std::hex << first_px
-              << " (R=0, G=0, B=0)" << std::dec << std::endl;
 
     // ============================================================
     // 寄存器配置
@@ -166,50 +256,16 @@ int main(int argc, char *argv[])
 
     auto start = std::chrono::system_clock::now();
     int done = 0;
-    int last_state = -1;
-    int last_wr_start = -1;
-    int loop_cnt = 0;
     while (done == 0) {
         done = fpai_device.defaultRegRegion().read(reg_base + 0x140, false);
         auto end = std::chrono::system_clock::now();
         int during = (int)std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-
-        // 每次循环都读 FSM 状态 (约每几十 us)
-        uint32_t dbg3 = fpai_device.defaultRegRegion().read(reg_base + 0x90, false);
-        int state = (dbg3 >> 11) & 0xF;
-        int wr_start = (dbg3 >> 3) & 1;
-        int rd_start = (dbg3 >> 4) & 1;
-        if (state != last_state || wr_start != last_wr_start) {
-            std::cout << "  [loop " << loop_cnt << ", t=" << during << "ms]"
-                      << " state=" << state
-                      << " wr=" << wr_start
-                      << " rd=" << rd_start << std::endl;
-            last_state = state;
-            last_wr_start = wr_start;
-        }
-        loop_cnt++;
-
         if (during > 30000) {
-            std::cout << "Error: FPGA Time Out! FSM state=" << last_state << std::endl;
+            std::cout << "Timeout!" << std::endl;
             return -1;
         }
     }
     std::cout << "Resize completed." << std::endl;
-
-    // ============================================================
-    // 读 FSM debug 寄存器 (rfu_rreg3 = 0x24)
-    // bit[14:11]=resize_state, [7]=resize_status, [3]=wr_start
-    // ============================================================
-    {
-        uint32_t dbg3 = fpai_device.defaultRegRegion().read(reg_base + 0x90, false);
-        std::cout << "\n=== FSM Debug (rfu_rreg3) ===" << std::endl;
-        std::cout << "  Raw: 0x" << std::hex << dbg3 << std::dec << std::endl;
-        std::cout << "  resize_state  = " << ((dbg3 >> 11) & 0xF)
-                  << " (expect 0=IDLE)" << std::endl;
-        std::cout << "  resize_status = " << ((dbg3 >> 7) & 1) << std::endl;
-        std::cout << "  wr_start      = " << ((dbg3 >> 3) & 1) << std::endl;
-        std::cout << "  rd_start      = " << ((dbg3 >> 4) & 1) << std::endl;
-    }
 
     // ============================================================
     // 读回全部区域
@@ -271,11 +327,8 @@ int main(int argc, char *argv[])
     // ============================================================
     std::cout << "\n=== DST first 8 rows (first pixel) ===" << std::endl;
     for (int y = 0; y < 8 && y < DST_HEIGHT; y++) {
-        int boff = dst_offset + y * dst_row_size;
+        int boff = dst_offset + y * dst_blocks_per_row * 64;
         uint32_t pixel = ((uint32_t*)(&all_buf[boff]))[0];
-        // 预期: 缩小2倍, 第y行对应源图像第 y*ratio 行
-        uint32_t expected_y = (uint32_t)(y * 64 / 32);  // SRC_HEIGHT/DST_HEIGHT = 2
-        uint32_t expected_r = (expected_y * SRC_WIDTH / DST_WIDTH) & 0xFF;  // rough
         printf("  DST row[%d] pixel[0] = 0x%08X\n", y, pixel);
     }
 
@@ -313,9 +366,12 @@ int main(int argc, char *argv[])
     mem_chunk.read((char*)dst_buf.get(), dst_offset, dst_data_size);
     auto now = std::chrono::system_clock::now();
     auto t = std::chrono::system_clock::to_time_t(now);
-    std::string out_path = "test/output-data/hardware/resize-output-" + std::to_string(t) + ".mem";
-    std::cout << "\nWriting output to " << out_path << std::endl;
-    write_mem_file(out_path, dst_buf.get(), dst_data_size);
+    std::string ts = std::to_string(t);
+    std::string out_mem = "test/output-data/hardware/resize-output-" + ts + ".mem";
+    std::string out_img = "test/output-data/hardware/resize-output-" + ts + ".png";
+    std::cout << "\nWriting output to " << out_mem << std::endl;
+    write_mem_file(out_mem, dst_buf.get(), dst_data_size);
+    mem_to_image(out_mem, out_img, DST_WIDTH, DST_HEIGHT);
 
     Device::Close(device);
     return 0;
