@@ -175,6 +175,115 @@ def fwht_fp16_stages(data_64: list) -> list:
 
 
 # =========================================================================
+# 768×30 block-diagonal FWHT (CLIP text feature scale)
+# =========================================================================
+
+def fwht_768x30_fp16(data_flat: list, vec_dim: int = 768,
+                      num_vectors: int = 30) -> list:
+    """
+    Block-diagonal 64-point FWHT for 768-dim vectors × 30.
+    Each 768-dim vector is processed as 12 independent groups of 64 elements.
+    Input:  flat list of 23040 FP16 ints (768 × 30)
+    Output: flat list of 23040 FP16 ints
+    Internal: float64 precision, round-to-nearest-even at output.
+    """
+    group_size = 64
+    num_groups = vec_dim // group_size  # 768 / 64 = 12
+
+    if len(data_flat) != vec_dim * num_vectors:
+        raise ValueError(f"Expected {vec_dim * num_vectors} values, got {len(data_flat)}")
+
+    result = []
+    for v in range(num_vectors):
+        base = v * vec_dim
+        for g in range(num_groups):
+            start = base + g * group_size
+            chunk = data_flat[start : start + group_size]
+            result.extend(fwht_fp16(list(chunk)))
+
+    return result
+
+
+def fwht_768x30_fp16_analyze(input_data: list, output_data: list = None,
+                              vec_dim: int = 768, num_vectors: int = 30):
+    """
+    Analyze FWHT effect on 768×30 data with outliers.
+    If output_data is None, runs fwht_768x30_fp16 first.
+
+    Prints per-vector outlier statistics showing how FWHT diffuses
+    outlier energy across elements.
+    """
+    if output_data is None:
+        output_data = fwht_768x30_fp16(input_data, vec_dim, num_vectors)
+
+    print(f"\n{'='*60}")
+    print(f"FWHT 768×30 Outlier Diffusion Analysis")
+    print(f"{'='*60}")
+
+    inp_f = np.array([fp16_to_float(int(x)) for x in input_data], dtype=np.float64)
+    out_f = np.array([fp16_to_float(int(x)) for x in output_data], dtype=np.float64)
+
+    # Global stats
+    inp_std = float(np.std(inp_f))
+    inp_outliers = int(np.sum(np.abs(inp_f) > 5 * inp_std))
+    out_std = float(np.std(out_f))
+    out_outliers = int(np.sum(np.abs(out_f) > 5 * out_std))
+
+    print(f"\nGlobal:")
+    print(f"  Input:  mean={inp_f.mean():.3f} std={inp_std:.2f} "
+          f"min={inp_f.min():.2f} max={inp_f.max():.2f} outliers(>5σ)={inp_outliers}")
+    print(f"  Output: mean={out_f.mean():.3f} std={out_std:.2f} "
+          f"min={out_f.min():.2f} max={out_f.max():.2f} outliers(>5σ)={out_outliers}")
+    if inp_outliers > 0:
+        reduction = (1.0 - out_outliers / inp_outliers) * 100
+        print(f"  Outlier reduction: {inp_outliers} → {out_outliers} ({reduction:.1f}%)")
+
+    # Per-vector analysis
+    print(f"\nPer-vector analysis:")
+    for v in range(num_vectors):
+        base = v * vec_dim
+        vin = inp_f[base : base + vec_dim]
+        vout = out_f[base : base + vec_dim]
+        vin_std = float(np.std(vin))
+        vin_peaks = int(np.sum(np.abs(vin) > 5 * vin_std))
+        vout_peaks = int(np.sum(np.abs(vout) > 5 * vin_std))
+        vout_maxabs = float(np.max(np.abs(vout)))
+
+        marker = ""
+        if vin_peaks > 0:
+            marker = f" → {vout_peaks} after FWHT"
+            if vout_peaks < vin_peaks:
+                marker += " ✓"
+        print(f"  vec {v:2d}: in_std={vin_std:5.1f} "
+              f"out_max={vout_maxabs:6.1f} "
+              f"in_outliers={vin_peaks}{marker}")
+
+    return output_data
+
+
+def write_fp16_mem(data: list, filepath: str, values_per_block: int = 32):
+    """
+    Write FP16 values as $readmemh-compatible .mem file.
+    Byte ordering matches generate_input.py (RTL-compatible).
+    Each block = 512 bits = 64 bytes = 32 FP16 values.
+    """
+    total = len(data)
+    num_blocks = (total + values_per_block - 1) // values_per_block
+    with open(filepath, 'w') as f:
+        for b in range(num_blocks):
+            block_bytes = bytearray(64)
+            for j in range(values_per_block):
+                idx = b * values_per_block + j
+                fp16 = int(data[idx]) & 0xFFFF if idx < total else 0
+                byte_pos_hi = 62 - j * 2
+                byte_pos_lo = 63 - j * 2
+                block_bytes[byte_pos_hi] = (fp16 >> 8) & 0xFF
+                block_bytes[byte_pos_lo] = fp16 & 0xFF
+            f.write(block_bytes.hex() + '\n')
+    print(f"Wrote {num_blocks} blocks to {filepath}")
+
+
+# =========================================================================
 # INT8 golden path
 # =========================================================================
 
@@ -385,17 +494,52 @@ def test_random():
 # =========================================================================
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("FWHT Golden Model — Verification Suite")
-    print("FP16 and INT8 paths, Walsh-ordered 64-point FWHT")
-    print("=" * 60)
+    import argparse
+    parser = argparse.ArgumentParser(description="FWHT Golden Model")
+    parser.add_argument("--test", action="store_true", help="Run verification suite")
+    parser.add_argument("--analyze", default=None, help="Analyze .mem file (768x30 format)")
+    parser.add_argument("--output", "-o", default="fwht-golden-output.mem",
+                        help="Output .mem for golden result")
+    parser.add_argument("--vec-dim", type=int, default=768)
+    parser.add_argument("--num-vectors", type=int, default=30)
+    args = parser.parse_args()
 
-    test_zeros()
-    test_impulse()
-    test_all_127()
-    test_involution()
-    test_fp16_vs_int8()
-    test_random()
+    if args.analyze:
+        # Read .mem file
+        blocks = []
+        with open(args.analyze) as f:
+            for line in f:
+                line = line.strip()
+                if line and len(line) == 128:
+                    blocks.append(int(line, 16))
+        print(f"Read {len(blocks)} blocks from {args.analyze}")
 
-    print("\n" + "=" * 60)
-    print("Done.")
+        # Extract FP16 values: fp16[j] = (blk >> (16*j)) & 0xFFFF
+        data = []
+        for blk in blocks:
+            for j in range(32):
+                data.append((blk >> (16 * j)) & 0xFFFF)
+        print(f"Extracted {len(data)} FP16 values")
+
+        # Run golden and analyze
+        output = fwht_768x30_fp16_analyze(data, vec_dim=args.vec_dim,
+                                           num_vectors=args.num_vectors)
+
+        # Write golden output
+        write_fp16_mem(output, args.output)
+        print(f"Golden output: {args.output}")
+
+    elif args.test:
+        print("=" * 60)
+        print("FWHT Golden Model — Verification Suite")
+        print("=" * 60)
+        test_zeros()
+        test_impulse()
+        test_all_127()
+        test_involution()
+        test_fp16_vs_int8()
+        test_random()
+        print("\n" + "=" * 60)
+        print("Done.")
+    else:
+        parser.print_help()

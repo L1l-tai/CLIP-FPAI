@@ -364,11 +364,8 @@ int main(int argc, char *argv[])
     // 5. 写入 .mem 文件
     // ============================================================
     mem_chunk.read((char*)dst_buf.get(), dst_offset, dst_data_size);
-    auto now = std::chrono::system_clock::now();
-    auto t = std::chrono::system_clock::to_time_t(now);
-    std::string ts = std::to_string(t);
-    std::string out_mem = "test/output-data/hardware/resize-output-" + ts + ".mem";
-    std::string out_img = "test/output-data/hardware/resize-output-" + ts + ".png";
+    std::string out_mem = "test/output-data/hardware/resize-output-board.mem";
+    std::string out_img = "test/output-data/hardware/resize-output-board.png";
     std::cout << "\nWriting output to " << out_mem << std::endl;
     write_mem_file(out_mem, dst_buf.get(), dst_data_size);
     mem_to_image(out_mem, out_img, DST_WIDTH, DST_HEIGHT);

@@ -71,6 +71,47 @@ module customop_top(
     wire              comp_start_rs_cross;
     wire              comp_done_rs_cross;
 
+    // ---- 算子周期计数器 (comp_start -> comp_done) ----
+    reg [31:0] cycle_cnt_gather;
+    reg [31:0] cycle_cnt_hadamard;
+    reg [31:0] cycle_cnt_resize;
+    reg        comp_start_gather_r;
+    reg        comp_start_hd_r;
+    reg        comp_start_rs_r;
+
+    always @(posedge clk or negedge rst_n_1) begin
+        if (!rst_n_1) begin
+            cycle_cnt_gather   <= 0;
+            cycle_cnt_hadamard <= 0;
+            cycle_cnt_resize   <= 0;
+            comp_start_gather_r <= 0;
+            comp_start_hd_r     <= 0;
+            comp_start_rs_r     <= 0;
+        end else begin
+            comp_start_gather_r <= comp_start_cross;
+            comp_start_hd_r     <= comp_start_hd_cross;
+            comp_start_rs_r     <= comp_start_rs_cross;
+
+            // Gather
+            if (comp_start_cross)
+                cycle_cnt_gather <= 0;
+            else if (comp_start_gather_r && !comp_done_cross)
+                cycle_cnt_gather <= cycle_cnt_gather + 1;
+
+            // Hadamard
+            if (comp_start_hd_cross)
+                cycle_cnt_hadamard <= 0;
+            else if (comp_start_hd_r && !comp_done_hd_cross)
+                cycle_cnt_hadamard <= cycle_cnt_hadamard + 1;
+
+            // Resize
+            if (comp_start_rs_cross)
+                cycle_cnt_resize <= 0;
+            else if (comp_start_rs_r && !comp_done_rs_cross)
+                cycle_cnt_resize <= cycle_cnt_resize + 1;
+        end
+    end
+
     //Gather FSM internal signals
     wire              addr_gen_valid;
     wire [31:0]       arbase_data_gen;
@@ -281,9 +322,9 @@ module customop_top(
           .wwidth_rs      ( wwidth_rs        ) ,
           .wheight_rs     ( wheight_rs       ) ,
           .comp_done_rs   ( comp_done_rs_cross ) ,
-          .rfu_rreg0     ( 32'd0            ),
-          .rfu_rreg1     ( 32'd0            ),
-          .rfu_rreg2     ( 32'd0            ),
+          .rfu_rreg0     ( cycle_cnt_gather   ),
+          .rfu_rreg1     ( cycle_cnt_hadamard ),
+          .rfu_rreg2     ( cycle_cnt_resize   ),
           .rfu_rreg3     ( 32'd0            ),
           
           .rfu_rreg4     ( 32'd0            ),                                              

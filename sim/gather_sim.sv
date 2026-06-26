@@ -4,14 +4,15 @@ module gather_sim;
 
     localparam CLK_PERIOD = 10;
     localparam RA_CLK_PERIOD = 10;
-    localparam INDICES_LEN = 20;
+    localparam INDICES_LEN = 77;
     localparam DATA_LEN = 32;
-    localparam DATA_WIDTH_BEATS = 8;
+    localparam DATA_WIDTH_BEATS = 4;
     localparam DATA_WIDTH_BYTES = DATA_WIDTH_BEATS * 64;
     localparam TOTAL_DATA_BEATS = INDICES_LEN * DATA_WIDTH_BEATS;
+    localparam IDX_BEATS = 5;              // ceil(77*4/64) = 5
     localparam IDX_BASE_ADDR = 32'h0000_1000;
     localparam SRC_BASE_ADDR = 32'h0000_2000;
-    localparam DST_BASE_ADDR = 32'h0001_0000;
+    localparam DST_BASE_ADDR = 32'h0002_0000;  // 256x256=65536B SRC, leave room
 
     reg clk;
     reg ra_clk;
@@ -105,7 +106,7 @@ module gather_sim;
     reg [31:0]  pending_ar_addr;
     reg [7:0]   r_latency_cnt;
 
-    // AR: 脉冲 ready + r_busy 串行化
+    // AR: 脉冲 ready + r_busy 串行�?
     always @(posedge clk) begin
         if (!rst_n) begin
             itf_arready <= 1'b0;
@@ -124,7 +125,7 @@ module gather_sim;
         end
     end
 
-    // R: 延迟后返回, r_busy 在 R 握手后释放
+    // R: 延迟后返�?, r_busy �? R 握手后释�?
     always @(posedge clk) begin
         if (!rst_n) begin
             itf_rvalid     <= 1'b0;
@@ -151,7 +152,7 @@ module gather_sim;
         end
     end
 
-    // AW: 脉冲式 ready
+    // AW: 脉冲�? ready
     always @(posedge clk) begin
         if (!rst_n) begin
             itf_awready <= 1'b0;
@@ -181,13 +182,13 @@ module gather_sim;
 
         for (i = 0; i < 2048; i = i + 1) mem[i] = 512'd0;
 
-        $readmemh("gather-input-idx.mem", mem, get_mem_index(IDX_BASE_ADDR));
-        $readmemh("gather-input-data.mem", mem, get_mem_index(SRC_BASE_ADDR));
+        $readmemh("gather-input-idx-256x256.mem", mem, get_mem_index(IDX_BASE_ADDR));
+        $readmemh("gather-input-data-256x256.mem", mem, get_mem_index(SRC_BASE_ADDR));
 
         $display("Configuring Gather Registers...");
         ra_write_reg(16'h05, INDICES_LEN);
         ra_write_reg(16'h06, DATA_WIDTH_BEATS);
-        ra_write_reg(16'h01, {16'd2, IDX_BASE_ADDR[15:0]});
+        ra_write_reg(16'h01, {IDX_BEATS[15:0], IDX_BASE_ADDR[15:0]});
         ra_write_reg(16'h03, SRC_BASE_ADDR);
         ra_write_reg(16'h02, DST_BASE_ADDR);
         ra_write_reg(16'h00, 32'h1);
@@ -215,7 +216,7 @@ module gather_sim;
             end
         end
 
-        write_mem_to_file("gather-output.mem", DST_BASE_ADDR, TOTAL_DATA_BEATS);
+        write_mem_to_file("gather-output-256x256.mem", DST_BASE_ADDR, TOTAL_DATA_BEATS);
         $display("GATHER SIMULATION COMPLETED");
         #100; $finish;
     end

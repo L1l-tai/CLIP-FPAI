@@ -1,95 +1,76 @@
 """
-Generate Gather test data for RTL testbench and golden model verification.
-
-Data layout (matching gather_sim.sv):
-  Indices:  0x0000_1000 → mem[64]  (2 blocks for 20 x 32-bit)
-  Data:     0x0000_2000 → mem[128] (32 rows x 8 blocks = 256 blocks)
-  Output:   0x0001_0000 → mem[1024]
+Generate Gather simulation input .mem files: 256x256 INT8 matrix + 77 indices.
 
 Usage:
-  python generate_gather_input.py              # generate .mem + .txt
-  python generate_gather_input.py -o custom    # custom output prefix
+    python generate_gather_input.py
+    -> gather-input-data-256x256.mem  (1024 blocks)
+    -> gather-input-idx-256x256.mem   (5 blocks)
 """
 
-import sys
-import os
-import random
+import os, random, math
+import numpy as np
 
-# === Gather testbench parameters ===
-INDICES_LEN = 20
-DATA_LEN = 32          # number of source data rows
-DATA_WIDTH = 8         # 8 blocks per row = 512 bytes
+N, D = 256, 256
+M = 77
+DATA_WIDTH_BEATS = 4           # 256 bytes/row = 4 beats
+SRC_TOTAL_BLOCKS = N * DATA_WIDTH_BEATS  # 1024
+IDX_BEATS = 5                  # ceil(77*4/64) = 5
+BYTES_PER_BLOCK = 64
 DEFAULT_SEED = 42
 
-# Addresses (from gather_sim.sv)
-IDX_BASE_ADDR = 0x0000_1000    # mem index 64
-SRC_BASE_ADDR = 0x0000_2000    # mem index 128
-DST_BASE_ADDR = 0x0001_0000    # mem index 1024
 
-BYTES_PER_BLOCK = 64
-
-
-def generate_indices_blocks():
-    """Generate indices blocks at IDX_BASE_ADDR. Returns (start_mem_idx, [blocks])."""
-    # 20 indices, each 4 bytes = 80 bytes = need 2 x 512-bit blocks
-    blocks = [0, 0]
-    mem_start = IDX_BASE_ADDR // BYTES_PER_BLOCK  # 64
-
-    for i in range(INDICES_LEN):
-        val = i % 16
-        byte_offset = i * 4
-        block_idx = byte_offset // BYTES_PER_BLOCK
-        intra_offset = byte_offset % BYTES_PER_BLOCK
-        # Write 32-bit value into block at byte intra_offset
-        blocks[block_idx] |= (val & 0xFFFFFFFF) << (intra_offset * 8)
-
-    return mem_start, blocks
-
-
-def generate_data_blocks(seed: int = DEFAULT_SEED):
-    """Generate random source data blocks at SRC_BASE_ADDR. Returns (start_mem_idx, [blocks])."""
-    rng = random.Random(seed)
-    blocks = []
-    mem_start = SRC_BASE_ADDR // BYTES_PER_BLOCK  # 128
-
-    for _ in range(DATA_LEN * DATA_WIDTH):
-        blk = rng.getrandbits(512)
-        blocks.append(blk)
-
-    return mem_start, blocks
-
-
-def write_blocks_file(filename, blocks):
-    """Write list of blocks to a pure hex file."""
+def write_blocks_hex(filename, blocks):
+    """Write list of ints as hex blocks to file."""
     with open(filename, 'w') as f:
         for blk in blocks:
             f.write(f"{blk:0128x}\n")
-    print(f"Wrote {len(blocks)} blocks to {filename}")
+    print(f"  Wrote {len(blocks)} blocks -> {filename}")
+
+
+def generate_indices(seed=DEFAULT_SEED):
+    """Generate 77 random 32-bit indices (0-255), packed into IDX_BEATS blocks."""
+    rng = random.Random(seed)
+    blocks = [0] * IDX_BEATS
+    for i in range(M):
+        val = rng.randint(0, N - 1)
+        byte_off = i * 4
+        blk_idx = byte_off // BYTES_PER_BLOCK
+        intra_off = byte_off % BYTES_PER_BLOCK
+        blocks[blk_idx] |= (val & 0xFFFFFFFF) << (intra_off * 8)
+    return blocks
+
+
+def generate_data():
+    """Generate 256x256 INT8 rainbow matrix, packed into SRC_TOTAL_BLOCKS blocks.
+    Byte order matches gather RTL: each 64B block = 16 pixels × 4 bytes (INT8 at byte 0).
+    """
+    blocks = [0] * SRC_TOTAL_BLOCKS
+    for row in range(N):
+        phase = row * 2.0 * math.pi / N
+        for col in range(D):
+            val = math.sin(col * 3.0 * math.pi / D + phase) * 0.6 \
+                + math.sin(2.0 * col * math.pi / D + phase * 1.7) * 0.3 \
+                + math.sin(3.0 * col * math.pi / D + phase * 0.5) * 0.1
+            b = int((val + 1.0) * 127.5) & 0xFF
+            # Each 64B block = 64 INT8 values, 4 blocks per row (= DATA_WIDTH_BEATS)
+            block_idx = (col // 64) + row * DATA_WIDTH_BEATS
+            byte_off = col % 64
+            blocks[block_idx] |= b << (byte_off * 8)
+    return blocks
 
 
 def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="Generate Gather test data")
-    parser.add_argument('-o', '--output', default='gather-input',
-                        help='Output file prefix (default: gather-input)')
-    parser.add_argument('--seed', type=int, default=DEFAULT_SEED,
-                        help=f'Random seed (default: {DEFAULT_SEED})')
-    args = parser.parse_args()
-
     out_dir = os.path.dirname(os.path.abspath(__file__))
-    prefix = os.path.join(out_dir, args.output)
 
-    idx_start, idx_blks = generate_indices_blocks()
-    data_start, data_blks = generate_data_blocks(seed=args.seed)
+    print(f"Generating {N}x{D} rainbow matrix ({SRC_TOTAL_BLOCKS} blocks)...")
+    data_blks = generate_data()
+    write_blocks_hex(os.path.join(out_dir, "gather-input-data-256x256.mem"), data_blks)
 
-    # Write separate files (no zero padding)
-    for ext in ['.mem', '.txt']:
-        write_blocks_file(f"{prefix}-idx{ext}", idx_blks)
-        write_blocks_file(f"{prefix}-data{ext}", data_blks)
+    print(f"Generating {M} random indices ({IDX_BEATS} blocks)...")
+    idx_blks = generate_indices()
+    write_blocks_hex(os.path.join(out_dir, "gather-input-idx-256x256.mem"), idx_blks)
 
-    print(f"\nTestbench $readmemh usage:")
-    print(f"  $readmemh(\"{args.output}-idx.mem\", mem, {idx_start});")
-    print(f"  $readmemh(\"{args.output}-data.mem\", mem, {data_start});")
+    print(f"\nDone. {M} indices, {N}x{D} matrix, {SRC_TOTAL_BLOCKS} data blocks")
 
 
 if __name__ == "__main__":
