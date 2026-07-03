@@ -275,54 +275,6 @@ int main(int argc, char *argv[])
     mem_chunk.read((char*)all_buf.data(), 0, total_size);
 
     // ============================================================
-    // 1. SRC 完整性
-    // ============================================================
-    std::cout << "\n=== SRC integrity ===" << std::endl;
-    int src_corrupted = 0;
-    for (int i = 0; i < src_data_size; i++) {
-        if (all_buf[src_offset + i] != src_buf[i]) {
-            src_corrupted++;
-            if (src_corrupted == 1)
-                std::cout << "  First corruption at src+" << i << std::endl;
-        }
-    }
-    if (src_corrupted == 0)
-        std::cout << "  SRC intact" << std::endl;
-    else
-        std::cout << "  SRC CORRUPTED: " << src_corrupted << " bytes" << std::endl;
-
-    // ============================================================
-    // 2. DST 是否全零
-    // ============================================================
-    std::cout << "\n=== DST data check ===" << std::endl;
-    bool dst_all_zero = true;
-    bool dst_has_data  = false;
-    for (int i = 0; i < dst_data_size; i++) {
-        if (all_buf[dst_offset + i] != 0) {
-            dst_all_zero = false;
-            dst_has_data = true;
-            break;
-        }
-    }
-    if (dst_all_zero) {
-        std::cout << "  DST is ALL ZEROS - no data was written!" << std::endl;
-    } else {
-        // 检查是否全为预填充模式（说明完全没被覆盖）
-        int unchanged = 0;
-        for (int i = 0; i < dst_data_size; i++) {
-            int8_t expected = (int8_t)((dst_offset + i) & 0xFF);
-            if (all_buf[dst_offset + i] == expected) unchanged++;
-        }
-        if (unchanged > dst_data_size * 9 / 10) {
-            std::cout << "  DST mostly UNCHANGED (" << unchanged << "/" << dst_data_size
-                      << " bytes match prefill) - little to no data written" << std::endl;
-        } else {
-            std::cout << "  DST has data (" << unchanged << "/" << dst_data_size
-                      << " bytes still match prefill)" << std::endl;
-        }
-    }
-
-    // ============================================================
     // 3. DST 逐行检查
     // ============================================================
     std::cout << "\n=== DST first 8 rows (first pixel) ===" << std::endl;
@@ -333,35 +285,7 @@ int main(int argc, char *argv[])
     }
 
     // ============================================================
-    // 4. Padding 越界检测
-    // ============================================================
-    std::cout << "\n=== Padding overflow check ===" << std::endl;
-
-    auto check_padding = [&](int start, int end, const char* name) {
-        int modified = 0;
-        for (int i = start; i < end; i++) {
-            if (all_buf[i] != (int8_t)(i & 0xFF)) {
-                modified++;
-                if (modified == 1)
-                    std::cout << "  " << name << " first mod at +0x"
-                              << std::hex << (i - start) << std::dec << std::endl;
-            }
-        }
-        std::cout << "  " << name << ": "
-                  << (modified > 0 ? "MODIFIED (" + std::to_string(modified) + " bytes)"
-                                   : "clean")
-                  << std::endl;
-    };
-
-    // src 之前的 padding
-    check_padding(0, src_offset, "Pad before src");
-    // src 和 dst 之间的 padding
-    check_padding(src_offset + src_data_size, dst_offset, "Pad between");
-    // dst 之后的 padding
-    check_padding(dst_offset + dst_data_size, total_size, "Pad after dst");
-
-    // ============================================================
-    // 5. 写入 .mem 文件
+    // 写入 .mem 文件
     // ============================================================
     mem_chunk.read((char*)dst_buf.get(), dst_offset, dst_data_size);
     std::string out_mem = "test/output-data/hardware/resize-output-board.mem";
@@ -369,6 +293,11 @@ int main(int argc, char *argv[])
     std::cout << "\nWriting output to " << out_mem << std::endl;
     write_mem_file(out_mem, dst_buf.get(), dst_data_size);
     mem_to_image(out_mem, out_img, DST_WIDTH, DST_HEIGHT);
+
+    // 读取周期计数器 (RFU_RADDR2 = 0x23, AXI offset 0x8C)
+    uint32_t cycle_cnt = fpai_device.defaultRegRegion().read(reg_base + 0x8C, false);
+    std::cout << "Resize cycle count: " << cycle_cnt << " cycles ("
+              << (cycle_cnt / 200.0) << " us @ 200MHz)" << std::endl;
 
     Device::Close(device);
     return 0;

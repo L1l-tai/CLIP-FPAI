@@ -94,6 +94,8 @@ int main(int argc, char *argv[])
             src_buf[row * D + col] = (int8_t)((val + 1.0f) * 127.5f);
         }
     }
+    write_mem_file("test/input-data/gather-input-data-256x256.mem", src_buf.data(), src_data_size);
+    write_mem_file("test/input-data/gather-input-idx-256x256.mem", idx_buf.data(), indices_size);
     std::cout << "Generated " << N << "x" << D << " rainbow matrix + " << INDICES_LEN << " indices" << std::endl;
 
     auto mem_chunk = fpai_device.defaultMemRegion().malloc(total_size, 0, 64);
@@ -187,7 +189,7 @@ int main(int argc, char *argv[])
     // 读取周期计数器
     uint32_t cycle_cnt = fpai_device.defaultRegRegion().read(reg_base + 0x84, false);
     std::cout << "Gather cycle count: " << cycle_cnt << " cycles ("
-              << (cycle_cnt / 100.0) << " us @ 100MHz)" << std::endl;
+              << (cycle_cnt / 200.0) << " us @ 200MHz)" << std::endl;
 
     std::cout << "\n=== GATHER TEST COMPLETE ===" << std::endl;
     return 0;

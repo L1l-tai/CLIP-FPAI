@@ -242,25 +242,7 @@ int main(int argc, char *argv[])
     // ============================================================
     uint32_t cycle_cnt = fpai_device.defaultRegRegion().read(reg_base + 0x88, false);
     std::cout << "Hadamard cycle count: " << cycle_cnt << " cycles ("
-              << (cycle_cnt / 100.0) << " us @ 100MHz)" << std::endl;
-
-    // ============================================================
-    // 生成单通道波形图 (随机通道, 调用简化 Python 脚本)
-    // ============================================================
-    {
-        int ch_idx = (int)(cycle_cnt % NUM_VECTORS);  // 0~29
-        char ch_name[128], cmd[512];
-        snprintf(ch_name, sizeof(ch_name),
-                 "test/output-data/hardware/fwht-output-board-ch%d.png", ch_idx);
-        snprintf(cmd, sizeof(cmd),
-                 "python test/Visualization/visualize_fwht_channel.py"
-                 " -i test/input-data/fwht-input-768x30.mem"
-                 " -w test/output-data/hardware/fwht-output-board.mem"
-                 " -c %d -o %s", ch_idx, ch_name);
-        std::cout << "Generating waveform: " << ch_name << " (channel " << ch_idx << ")" << std::endl;
-        int ret = system(cmd);
-        if (ret != 0) std::cerr << "Warning: waveform gen failed (code " << ret << ")" << std::endl;
-    }
+              << (cycle_cnt / 200.0) << " us @ 200MHz)" << std::endl;
 
     std::cout << "\n=== HADAMARD TEST COMPLETE ===" << std::endl;
     return 0;
