@@ -1,8 +1,7 @@
 #pragma once
 
 #include <cstdint>
-
-namespace fpai { class FPAIDevice; }
+#include "compile_fpai_target.hpp"
 
 struct ResizeConfig {
     uint32_t src_addr;    // PL-DDR 源图像物理地址
