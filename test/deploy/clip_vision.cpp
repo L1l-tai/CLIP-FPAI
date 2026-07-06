@@ -95,6 +95,154 @@ int main(int argc, char* argv[])
     const int NUM_TEXT = 5;
 
     // ---------- 模式分发 ----------
+    if (argc >= 3 && std::string(argv[1]) == "test") {
+        // test <config_yaml> <json> <raw>: 单帧双路径预处理对比
+        std::string yaml_path = argv[2], JSON = argv[3], RAW = argv[4];
+        YAML::Node config;
+        try { config = YAML::LoadFile(yaml_path); }
+        catch (...) { std::cerr << "YAML fail" << std::endl; return -1; }
+        const auto& sys = config["sys"], &cam_y = config["pipeline"]["camera"], &dsp = config["pipeline"]["display"];
+
+        auto device = Device::Open(sys["device"].as<std::string>().c_str());
+        auto fpai_device = device.cast<FPAIDevice>();
+        auto& reg = fpai_device.defaultRegRegion();
+
+        const int CW = cam_y["width"].as<int>(), CH = cam_y["height"].as<int>();
+        const int DW = dsp["width"].as<int>(), DH = dsp["height"].as<int>();
+        const bool VTC = cam_y["vtc"] ? cam_y["vtc"].as<bool>() : false;
+        const int NET_W = 640, NET_H = 480, DST = 224;
+        const float mean_c[3] = {0.48145466f, 0.4578275f, 0.40821073f};
+        const float std_c[3]  = {0.26862954f, 0.26130258f, 0.27577711f};
+
+        // 相机
+        auto camera = std::make_unique<GenericSDICamera>(
+            0, fpai_device, CW, CH, camera_fmt::RGB565, DW, DH, camera_fmt::RGB565,
+            crop_position::center, NET_W, NET_H, crop_position::center, 0x40080000, VTC);
+        const int PS_SIZE = camera->getBufferSize();
+        const size_t BC = 4;
+        BufferManager bm(BC);
+        std::string cg = "input_udma_buff_camera0";
+        bm.createChunkGroup(cg, fpai_device, PS_SIZE);
+        auto dd = fpai_device.getMemRegion("udma").malloc(PS_SIZE, false);
+        reg.write(0x40080054, dd->begin.addr() >> 3);
+
+        // IMK + Resize buffers
+        auto imk_mem = fpai_device.defaultMemRegion().malloc(NET_W*NET_H*3+4096, 0, 64);
+        auto rs_src  = fpai_device.defaultMemRegion().malloc(NET_W*NET_H*4+4096, 0, 64);
+        auto rs_dst  = fpai_device.defaultMemRegion().malloc(DST*DST*4+4096, 0, 64);
+        uint64_t imk_a=imk_mem->begin.addr(), rs_s=rs_src->begin.addr(), rs_d=rs_dst->begin.addr();
+
+        // 加载 vision 模型
+        auto network = loadNetwork(JSON, RAW);
+        auto session = initSession("zg330", network, device, 4, true, true, false);
+        session.apply();
+
+        // 采集一帧
+        int idx = bm.requestIndex(cg);
+        auto& chunk = bm.getChunk(cg, idx);
+        reg.write(0x80000400 + 0x114, imk_a);
+        std::vector<float> ev; initImageMake(fpai_device, 0, NET_W, NET_H, 3, imk_a, 8, ev, ev);
+        reg.write(0x80000400 + 0x254, 0x4);
+        camera->take(chunk);
+        runImageMakeForward(fpai_device, 0, NET_W, NET_H, 3, imk_a, 8);
+        camera->wait(500);
+
+        // === Path A: Camera pipeline ===
+        std::vector<uint8_t> imk(NET_W*NET_H*3);
+        imk_mem.read((char*)imk.data(), 0, NET_W*NET_H*3);
+        std::vector<uint32_t> padded(NET_W*NET_H);
+        for (int i=0;i<NET_W*NET_H;i++)
+            padded[i]=(uint32_t)imk[i*3+2]<<16|(uint32_t)imk[i*3+1]<<8|imk[i*3+0];
+        rs_src.write(0,(char*)padded.data(),NET_W*NET_H*4);
+
+        ResizeConfig rc;
+        rc.src_addr=(uint32_t)rs_s; rc.dst_addr=(uint32_t)rs_d;
+        rc.src_w=NET_W; rc.src_h=NET_H; rc.dst_w=DST; rc.dst_h=DST; rc.crop_enable=1;
+        uint32_t rs_cycles; op_resize_run(&fpai_device,0x400C0000,rc,5000,&rs_cycles);
+
+        std::vector<uint8_t> rs_out(DST*DST*4);
+        rs_dst.read((char*)rs_out.data(),0,DST*DST*4);
+        std::vector<float> fpHW(DST*DST*3);
+        for (int i=0;i<DST*DST;i++){
+            uint32_t w=((uint32_t*)rs_out.data())[i];
+            fpHW[i*3+0]=((float)((w>>16)&0xFF)/255.f-mean_c[2])/std_c[2]; // B
+            fpHW[i*3+1]=((float)((w>>8)&0xFF)/255.f-mean_c[1])/std_c[1];  // G
+            fpHW[i*3+2]=((float)(w&0xFF)/255.f-mean_c[0])/std_c[0];       // R
+        }
+
+        // === Path B: Software pipeline (INTER_LINEAR, 对比 FPGA bilinear) ===
+        std::vector<uint8_t> ps(PS_SIZE);
+        bm.read(ps.data(), chunk, PS_SIZE);
+        cv::Mat full(DH, DW, CV_8UC2, ps.data());
+        cv::Mat bgr; cv::cvtColor(full, bgr, cv::COLOR_BGR5652BGR);
+        // 和 PL resize 同区域: y=60~1019, 3×2 → 640×480; 再 FPGA resize → 224
+        cv::Mat pl_crop = bgr(cv::Rect(0, 60, DW, 960));
+        cv::Mat pl_rsz;
+        cv::resize(pl_crop, pl_rsz, cv::Size(NET_W, NET_H), 0, 0, cv::INTER_LINEAR);
+        cv::Mat rsz; cv::resize(pl_rsz, rsz, cv::Size(DST,DST), 0, 0, cv::INTER_LINEAR);
+        // BGR→RGB for CLIP norm
+        cv::Mat rgb; cv::cvtColor(rsz, rgb, cv::COLOR_BGR2RGB);
+        rgb.convertTo(rgb, CV_32FC3, 1.0/255.0);
+        std::vector<cv::Mat> ch(3); cv::split(rgb, ch);
+        for (int c=0;c<3;c++) ch[c]=(ch[c]-mean_c[c])/std_c[c];
+        cv::merge(ch, rgb);
+        std::vector<float> fpSW(DST*DST*3);
+        std::memcpy(fpSW.data(), rgb.data, DST*DST*3*sizeof(float));
+
+        // === 比较 (HW=BGR序, SW=RGB序 → 统一转BGR再比) ===
+        // fpSW 当前是 RGB interleaved, 转为 BGR
+        std::vector<float> fpSW_bgr(DST*DST*3);
+        for (int i=0;i<DST*DST;i++){
+            fpSW_bgr[i*3+0]=fpSW[i*3+2];  // B
+            fpSW_bgr[i*3+1]=fpSW[i*3+1];  // G
+            fpSW_bgr[i*3+2]=fpSW[i*3+0];  // R
+        }
+        double diff_sum=0, diff_max=0;
+        for (int i=0;i<DST*DST*3;i++){
+            double d=std::abs((double)fpHW[i]-(double)fpSW_bgr[i]);
+            diff_sum+=d; if(d>diff_max)diff_max=d;
+        }
+        double diff_mean=diff_sum/(DST*DST*3);
+        std::vector<float> hw_norm=fpHW, sw_norm=fpSW_bgr;
+        l2norm(hw_norm); l2norm(sw_norm);
+        float cos_pre=cosine(hw_norm, sw_norm);
+        std::cout << "=== Preprocess diff ===" << std::endl;
+        std::cout << "  mean_abs_diff=" << diff_mean << " max_abs_diff=" << diff_max << std::endl;
+        std::cout << "  cosine(HW,SW)=" << cos_pre << " (>0.99=OK)" << std::endl;
+
+        // === 直接验证输入数据不同 ===
+        std::cout << "fpHW[0..3]: "; for(int i=0;i<3;i++)std::cout<<fpHW[i]<<" "; std::cout<<std::endl;
+        std::cout << "fpSW[0..3]: "; for(int i=0;i<3;i++)std::cout<<fpSW[i]<<" "; std::cout<<std::endl;
+
+        // === NPU forward: 不用 CvMat2Tensor, 直接用 data2Tensor ===
+        // === NPU forward: 用 CvMat2Tensor (和 camera mode 一致) ===
+        cv::Mat mHW(DST,DST,CV_32FC3,fpHW.data());
+        cv::Mat mSW(DST,DST,CV_32FC3,fpSW.data());
+        // warmup with SW
+        Tensor tw = CvMat2Tensor(mSW, network, std::make_tuple(DST,DST,3));
+        { auto w = session.forward({tw}); for(auto&t:w) t.waitForReady(std::chrono::milliseconds(5000)); device.reset(1); }
+        // Path A: forward with HW
+        Tensor th = CvMat2Tensor(mHW, network, std::make_tuple(DST,DST,3));
+        auto oHW = session.forward({th}); for(auto&t:oHW) t.waitForReady(std::chrono::milliseconds(5000));
+        device.reset(1);
+        // Path B: forward with SW
+        Tensor ts = CvMat2Tensor(mSW, network, std::make_tuple(DST,DST,3));
+        auto oSW = session.forward({ts}); for(auto&t:oSW) t.waitForReady(std::chrono::milliseconds(5000));
+
+        auto eHW=oHW[0].to(HostDevice::MemRegion());
+        auto eSW=oSW[0].to(HostDevice::MemRegion());
+        std::vector<float> embHW((float*)eHW.data().cptr(),(float*)eHW.data().cptr()+DIM);
+        std::vector<float> embSW((float*)eSW.data().cptr(),(float*)eSW.data().cptr()+DIM);
+        l2norm(embHW); l2norm(embSW);
+        float cos_emb=cosine(embHW, embSW);
+        std::cout << "=== Embedding compare ===" << std::endl;
+        std::cout << "  cosine(embHW,embSW)=" << cos_emb << " (>0.99=OK)" << std::endl;
+        std::cout << "  embHW[0..4]: "; for(int i=0;i<5;i++)std::cout<<embHW[i]<<" "; std::cout<<std::endl;
+        std::cout << "  embSW[0..4]: "; for(int i=0;i<5;i++)std::cout<<embSW[i]<<" "; std::cout<<std::endl;
+
+        Device::Close(device); return 0;
+    }
+
     if (argc >= 3 && std::string(argv[1]) == "camera") {
         std::cerr << "[main] camera mode selected" << std::endl;
         // camera <config_yaml> <json> <raw> <tag>
@@ -200,16 +348,17 @@ int main(int argc, char* argv[])
                         rcfg.src_w = NET_W; rcfg.src_h = NET_H;
                         rcfg.dst_w = DST_SZ; rcfg.dst_h = DST_SZ;
                         rcfg.crop_enable = 1;
-                        if (op_resize_run(&fpai_device, 0x400C0000, rcfg, 2000)) {
+                        uint32_t rs_cycles;
+                        if (op_resize_run(&fpai_device, 0x400C0000, rcfg, 2000, &rs_cycles)) {
                             // CLIP norm fp32
                             std::vector<uint8_t> rs_out(DST_SZ*DST_SZ*4);
                             rs_dst.read((char*)rs_out.data(), 0, DST_SZ*DST_SZ*4);
                             std::vector<float> fp32_rgb(DST_SZ*DST_SZ*3);
                             for (int i = 0; i < DST_SZ*DST_SZ; i++) {
                                 uint32_t w = ((uint32_t*)rs_out.data())[i];
-                                fp32_rgb[i*3+0] = ((float)((w>>16)&0xFF)/255.f - mean_c[0]) / std_c[0];
-                                fp32_rgb[i*3+1] = ((float)((w>>8)&0xFF)/255.f - mean_c[1]) / std_c[1];
-                                fp32_rgb[i*3+2] = ((float)(w&0xFF)/255.f - mean_c[2]) / std_c[2];
+                                fp32_rgb[i*3+0] = ((float)((w>>16)&0xFF)/255.f - mean_c[2]) / std_c[2];  // B
+                                fp32_rgb[i*3+1] = ((float)((w>>8)&0xFF)/255.f - mean_c[1]) / std_c[1];  // G
+                                fp32_rgb[i*3+2] = ((float)(w&0xFF)/255.f - mean_c[0]) / std_c[0];       // R
                             }
                             cv::Mat imgf(DST_SZ, DST_SZ, CV_32FC3, fp32_rgb.data());
                             Tensor t = CvMat2Tensor(imgf, network, std::make_tuple(DST_SZ, DST_SZ, 3));

@@ -13,6 +13,6 @@ struct ResizeConfig {
     int      crop_enable = 1;
 };
 
-// 配置寄存器 → 启动 → 轮询完成, 超时返回 false
+// 配置寄存器 → 启动 → 轮询完成, 超时返回 false; cycle_cnt 输出周期数 (可为nullptr)
 bool op_resize_run(fpai::FPAIDevice* dev, uint32_t reg_base, const ResizeConfig& cfg,
-                   int timeout_ms = 30000);
+                   int timeout_ms = 30000, uint32_t* cycle_cnt = nullptr);

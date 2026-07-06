@@ -182,7 +182,8 @@ int main(int argc, char *argv[])
             rcfg.dst_w = DST_W;
             rcfg.dst_h = DST_H;
             rcfg.crop_enable = 1;
-            if (!op_resize_run(&fpai_device, 0x400C0000, rcfg, 5000)) {
+                    uint32_t rs_cycles;
+            if (!op_resize_run(&fpai_device, 0x400C0000, rcfg, 5000, &rs_cycles)) {
                 std::cerr << "Resize failed!" << std::endl;
                 return false;
             }
