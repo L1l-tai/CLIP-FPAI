@@ -119,7 +119,7 @@ module resize_sim;
         end
     end
 
-    // R: burst 模式, rvalid �? beat 保持�?
+    // R: burst 模式, rvalid �?? beat 保持�??
     always @(posedge clk) begin
         if (!rst_n) begin
             itf_rvalid <= 1'b0; itf_rdata <= 512'd0; r_queue_rd_ptr <= 0;
@@ -152,7 +152,7 @@ module resize_sim;
         end
     end
 
-    // AW: 脉冲�? ready
+    // AW: 脉冲�?? ready
     always @(posedge clk) begin
         if (!rst_n) begin
             itf_awready <= 1'b0;
@@ -180,7 +180,7 @@ module resize_sim;
 
         for (i = 0; i < MEM_DEPTH; i = i + 1) mem[i] = 512'd0;
 
-        $readmemh("../test/input-data/resize-input-640x480.mem", mem, get_mem_index(SRC_BASE_ADDR));
+        $readmemh("resize-input-640x480.mem", mem, get_mem_index(SRC_BASE_ADDR));
         $display("Loaded source image (%dx%d)", SRC_WIDTH, SRC_HEIGHT);
 
         $display("Configuring Resize Registers (CROP=%d)...", CROP_ENABLE);
