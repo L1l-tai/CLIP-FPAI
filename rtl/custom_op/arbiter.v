@@ -56,21 +56,6 @@ module arbiter (
     output                resize_wr_done    ,
     input                 resize_comp_done   ,
 
-    //============ fmt_cvt DMA接口 ============
-    input        [31:0]   fmt_cvt_arbase      ,
-    input        [15:0]   fmt_cvt_arsize      ,
-    input        [31:0]   fmt_cvt_awbase      ,
-    input        [15:0]   fmt_cvt_awsize      ,
-    input                 fmt_cvt_rd_start    ,
-    input                 fmt_cvt_wr_start    ,
-    input                 fmt_cvt_din_ready   ,
-    input        [511:0]  fmt_cvt_dout        ,
-    input                 fmt_cvt_dout_valid  ,
-    output                fmt_cvt_dout_ready  ,
-    output                fmt_cvt_rd_done    ,
-    output                fmt_cvt_wr_done    ,
-    input                 fmt_cvt_comp_done   ,
-
     //============ 连接到DMA的接口 ============
     output       [31:0]   itf_arbase         ,  // DMA读地址基地址
     output       [15:0]   itf_arsize         ,  // DMA读数据长度
@@ -90,24 +75,21 @@ module arbiter (
     input                 gather_comp_start  ,
     input                 hadamard_comp_start,
     input                 resize_comp_start ,
-    input                 fmt_cvt_comp_start,
 
     input                 clk               ,
     input                 rst_n
 );
 
     // 仲裁状态
-    localparam IDLE     = 3'd0;
-    localparam GATHER   = 3'd1;
-    localparam HADAMARD = 3'd2;
-    localparam RESIZE   = 3'd3;
-    localparam FMT_CVT  = 3'd4;
+    localparam IDLE     = 3'b00;
+    localparam GATHER   = 3'b01;
+    localparam HADAMARD = 3'b10;
+    localparam RESIZE   = 3'b11;
 
     reg [2:0] grant;
     reg       gather_active;
     reg       hadamard_active;
     reg       resize_active;
-    reg       fmt_cvt_active;
 
     always @(posedge clk or negedge rst_n) begin
         if(!rst_n) begin
@@ -160,23 +142,6 @@ module arbiter (
         end
     end
 
-    always @(posedge clk or negedge rst_n) begin
-        if(!rst_n) begin
-            fmt_cvt_active <= 1'b0;
-        end
-        else begin
-            if(fmt_cvt_comp_start) begin
-                fmt_cvt_active <= 1'b1;
-            end
-            else if(fmt_cvt_comp_done) begin
-                fmt_cvt_active <= 1'b0;
-            end
-            else begin
-                fmt_cvt_active <= fmt_cvt_active;
-            end
-        end
-    end
-
     // 仲裁逻辑
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -194,21 +159,21 @@ module arbiter (
                     else if (resize_active && !resize_comp_done) begin
                         grant <= RESIZE;
                     end
-                    else if (fmt_cvt_active && !fmt_cvt_comp_done) begin
-                        grant <= FMT_CVT;
-                    end
                 end
                 GATHER: begin
-                    if (gather_comp_done) grant <= IDLE;
+                    if (gather_comp_done) begin
+                        grant <= IDLE;
+                    end
                 end
                 HADAMARD: begin
-                    if (hadamard_comp_done) grant <= IDLE;
+                    if (hadamard_comp_done) begin
+                        grant <= IDLE;
+                    end
                 end
                 RESIZE: begin
-                    if (resize_comp_done) grant <= IDLE;
-                end
-                FMT_CVT: begin
-                    if (fmt_cvt_comp_done) grant <= IDLE;
+                    if (resize_comp_done) begin
+                        grant <= IDLE;
+                    end
                 end
                 default: grant <= IDLE;
             endcase
@@ -218,67 +183,56 @@ module arbiter (
     wire gather_grant;
     wire hadamard_grant;
     wire resize_grant;
-    wire fmt_cvt_grant;
     assign gather_grant   = (grant == GATHER);
     assign hadamard_grant = (grant == HADAMARD);
     assign resize_grant   = (grant == RESIZE);
-    assign fmt_cvt_grant  = (grant == FMT_CVT);
 
     // ============ DMA信号选择 ============
 
     // 读地址基地址
     assign itf_arbase = gather_grant   ? gather_arbase   :
                         hadamard_grant ? hadamard_arbase :
-                        resize_grant   ? resize_arbase   :
-                        fmt_cvt_grant  ? fmt_cvt_arbase  : 32'b0;
+                        resize_grant   ? resize_arbase   : 32'b0;
 
     // 读数据长度
     assign itf_arsize = gather_grant   ? gather_arsize   :
                         hadamard_grant ? hadamard_arsize :
-                        resize_grant   ? resize_arsize   :
-                        fmt_cvt_grant  ? fmt_cvt_arsize  : 16'b0;
+                        resize_grant   ? resize_arsize   : 16'b0;
 
     // 读启动信号
     assign itf_rd_start = gather_grant   ? gather_rd_start   :
                            hadamard_grant ? hadamard_rd_start :
-                           resize_grant   ? resize_rd_start   :
-                           fmt_cvt_grant  ? fmt_cvt_rd_start  : 1'b0;
+                           resize_grant   ? resize_rd_start   : 1'b0;
 
     // 写地址基地址
     assign itf_awbase = gather_grant   ? gather_awbase   :
                         hadamard_grant ? hadamard_awbase :
-                        resize_grant   ? resize_awbase   :
-                        fmt_cvt_grant  ? fmt_cvt_awbase  : 32'b0;
+                        resize_grant   ? resize_awbase   : 32'b0;
 
     // 写数据长度
     assign itf_awsize = gather_grant   ? gather_awsize   :
                         hadamard_grant ? hadamard_awsize :
-                        resize_grant   ? resize_awsize   :
-                        fmt_cvt_grant  ? fmt_cvt_awsize  : 16'b0;
+                        resize_grant   ? resize_awsize   : 16'b0;
 
     // 写启动信号
     assign itf_wr_start = gather_grant   ? gather_wr_start   :
                            hadamard_grant ? hadamard_wr_start :
-                           resize_grant   ? resize_wr_start   :
-                           fmt_cvt_grant  ? fmt_cvt_wr_start  : 1'b0;
+                           resize_grant   ? resize_wr_start   : 1'b0;
 
     // 写数据
     assign itf_comp_data = gather_grant   ? gather_comp_data  :
                            hadamard_grant ? hadamard_dout     :
-                           resize_grant   ? resize_dout       :
-                           fmt_cvt_grant  ? fmt_cvt_dout      : 512'b0;
+                           resize_grant   ? resize_dout       : 512'b0;
 
     // 数据有效信号
     assign itf_data_valid = gather_grant   ? gather_data_valid   :
                              hadamard_grant ? hadamard_dout_valid :
-                             resize_grant   ? resize_dout_valid   :
-                             fmt_cvt_grant  ? fmt_cvt_dout_valid  : 1'b0;
+                             resize_grant   ? resize_dout_valid   : 1'b0;
 
     // 数据接收就绪信号
     assign itf_rready = gather_grant   ? gather_din_ready   :
                         hadamard_grant ? hadamard_din_ready :
-                        resize_grant   ? resize_din_ready   :
-                        fmt_cvt_grant  ? fmt_cvt_din_ready  : 1'b1;
+                        resize_grant   ? resize_din_ready   : 1'b1;
 
     // ============ 完成信号路由 ============
     assign gather_data_ready    = gather_grant   ? itf_data_ready : 1'b0;
@@ -290,8 +244,5 @@ module arbiter (
     assign resize_dout_ready    = resize_grant   ? itf_data_ready : 1'b0;
     assign resize_rd_done       = resize_grant   ? itf_rd_done : 1'b0;
     assign resize_wr_done       = resize_grant   ? itf_wr_done : 1'b0;
-    assign fmt_cvt_dout_ready   = fmt_cvt_grant  ? itf_data_ready : 1'b0;
-    assign fmt_cvt_rd_done      = fmt_cvt_grant  ? itf_rd_done : 1'b0;
-    assign fmt_cvt_wr_done      = fmt_cvt_grant  ? itf_wr_done : 1'b0;
 
 endmodule

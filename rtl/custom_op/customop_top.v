@@ -71,7 +71,7 @@ module customop_top(
     wire              comp_start_rs_cross;
     wire              comp_done_rs_cross;
 
-    // ---- 共享周期计数器 (单计数器, SR 门控) ----
+    // ---- 共享周期计数器 (单 timer, SR 门控) ----
     reg [31:0] op_timer;
     reg [31:0] cycle_cnt_gather;
     reg [31:0] cycle_cnt_hadamard;
@@ -228,27 +228,6 @@ module customop_top(
     wire              clr_dbeat_1_rs;
     wire              rd_data_ready_rs_0; // 第一行读数据到达
     wire              rd_data_ready_rs_1; // 第二行读数据到达
-
-    //fmt_cvt signals (from reg_ctrl)
-    wire              comp_start_fc;
-    wire              direction_fc;
-    wire [31:0]       rbase_fc, wbase_fc, pixel_cnt_fc;
-    wire              comp_done_fc;
-    //fmt_cvt FSM ↔ core
-    wire              fc_gen_status, fc_trans_data, fc_repack_en;
-    wire              fc_addr_gen_valid;
-    //fmt_cvt address → arbiter
-    wire [31:0]       fc_arbase, fc_awbase;
-    wire [15:0]       fc_arsize, fc_awsize;
-    //fmt_cvt data → arbiter
-    wire              fc_din_ready;
-    wire [511:0]      fc_dout;
-    wire              fc_dout_valid, fc_dout_ready;
-    //fmt_cvt DMA control
-    wire              fc_rd_start, fc_wr_start;
-    wire              fc_rd_done, fc_wr_done;
-    wire              fc_rd_data_ready, fc_rd_last_line;
-
     //Arbiter signals
     wire [31:0]       arb_arbase_gather;
     wire [15:0]       arb_arsize_gather;
@@ -340,13 +319,6 @@ module customop_top(
           .wwidth_rs      ( wwidth_rs        ) ,
           .wheight_rs     ( wheight_rs       ) ,
           .comp_done_rs   ( comp_done_rs_cross ) ,
-
-          .comp_start_fc  ( comp_start_fc    ) ,
-          .direction_fc   ( direction_fc     ) ,
-          .rbase_fc       ( rbase_fc         ) ,
-          .wbase_fc       ( wbase_fc         ) ,
-          .pixel_cnt_fc   ( pixel_cnt_fc     ) ,
-          .comp_done_fc   ( comp_done_fc     ) ,
           .rfu_rreg0     ( cycle_cnt_gather   ),
           .rfu_rreg1     ( cycle_cnt_hadamard ),
           .rfu_rreg2     ( cycle_cnt_resize   ),
@@ -485,21 +457,6 @@ module customop_top(
       .resize_wr_done     ( arb_wr_done_rs      ),
       .resize_comp_done   ( comp_done_rs        ),
 
-      // fmt_cvt DMA interface
-      .fmt_cvt_arbase     ( fc_arbase           ),
-      .fmt_cvt_arsize     ( fc_arsize           ),
-      .fmt_cvt_awbase     ( fc_awbase           ),
-      .fmt_cvt_awsize     ( fc_awsize           ),
-      .fmt_cvt_rd_start   ( fc_rd_start         ),
-      .fmt_cvt_wr_start   ( fc_wr_start         ),
-      .fmt_cvt_din_ready  ( fc_din_ready        ),
-      .fmt_cvt_dout       ( fc_dout             ),
-      .fmt_cvt_dout_valid ( fc_dout_valid       ),
-      .fmt_cvt_dout_ready ( fc_dout_ready       ),
-      .fmt_cvt_rd_done    ( fc_rd_done          ),
-      .fmt_cvt_wr_done    ( fc_wr_done          ),
-      .fmt_cvt_comp_done  ( comp_done_fc        ),
-
       // To DMA interface
       .itf_arbase         ( itf_arbase_arb      ),
       .itf_arsize         ( itf_arsize_arb      ),
@@ -518,7 +475,6 @@ module customop_top(
       .gather_comp_start  ( comp_start_cross    ),
       .hadamard_comp_start( comp_start_hd_cross ),
       .resize_comp_start  ( comp_start_rs_cross ),
-      .fmt_cvt_comp_start ( comp_start_fc       ),
 
       .clk                ( clk                 ),
       .rst_n              ( rst_n_1             )
@@ -863,53 +819,6 @@ module customop_top(
 
       .clk              ( clk              ),
       .rst_n            ( rst_n_1          )
-  );
-
-  // ============================================================
-  // fmt_cvt Instances (align gather pattern: FSM + data/addr/AVR core)
-  // ============================================================
-  fmt_cvt_fsm U_fmt_cvt_fsm (
-      .start         ( comp_start_fc     ),
-      .rd_done       ( fc_rd_done        ),
-      .wr_done       ( fc_wr_done        ),
-      .addr_gen_valid( fc_addr_gen_valid ),
-      .rd_data_ready ( fc_rd_data_ready  ),
-      .total_groups  ( (pixel_cnt_fc + 63) >> 6 ),
-      .rd_start      ( fc_rd_start       ),
-      .wr_start      ( fc_wr_start       ),
-      .gen_status    ( fc_gen_status     ),
-      .trans_data    ( fc_trans_data     ),
-      .repack_en     ( fc_repack_en      ),
-      .comp_done     ( comp_done_fc      ),
-      .rd_last_line  ( fc_rd_last_line   ),
-      .state_out     (                   ),
-      .clk           ( clk               ),
-      .rst_n         ( rst_n_1           )
-  );
-
-  fmt_cvt U_fmt_cvt (
-      .gen_status    ( fc_gen_status     ),
-      .trans_data    ( fc_trans_data     ),
-      .repack_en     ( fc_repack_en      ),
-      .comp_done     ( comp_done_fc      ),
-      .din           ( itf_rdata         ),
-      .din_valid     ( itf_rvalid        ),
-      .din_ready     ( fc_din_ready      ),
-      .addr_gen_valid( fc_addr_gen_valid ),
-      .arbase        ( fc_arbase         ),
-      .arsize        ( fc_arsize         ),
-      .awbase        ( fc_awbase         ),
-      .awsize        ( fc_awsize         ),
-      .direction     ( direction_fc      ),
-      .src_addr      ( rbase_fc          ),
-      .dst_addr      ( wbase_fc          ),
-      .total_groups  ( (pixel_cnt_fc + 63) >> 6 ),
-      .dout          ( fc_dout           ),
-      .dout_valid    ( fc_dout_valid     ),
-      .dout_ready    ( fc_dout_ready     ),
-      .rd_data_ready ( fc_rd_data_ready  ),
-      .clk           ( clk               ),
-      .rst_n         ( rst_n_1           )
   );
 
   always@(posedge clk or negedge ra_rst_n) begin

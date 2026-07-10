@@ -45,6 +45,7 @@
 #include "./op-func/op_resize.h"
 #include "./op-func/op_resize.cpp"
 #include "yaml-cpp/yaml.h"
+#include "simple_tokenizer.hpp"
 
 using namespace icraft::xrt;
 using namespace icraft::xir;
@@ -86,7 +87,7 @@ static std::vector<int32_t> read_int32_bin(const std::string& path, size_t count
 // 文本编码器 (与 clip_dual_2 一致)
 // ============================================================
 static std::vector<float> encode_text(
-    const std::string& prompt, const std::string& data_dir,
+    const std::vector<int32_t>& input_ids, const std::string& data_dir,
     Device& device, Session& text_session, const icraft::xir::Network& text_network,
     FPAIDevice& fpai_device, icraft::xrt::MemChunk& gather_chunk,
     uint32_t idx_addr, uint32_t src_addr, uint32_t dst_addr)
@@ -98,7 +99,6 @@ static std::vector<float> encode_text(
 
     auto token_emb = read_float_bin(data_dir + "token_emb.bin", (size_t)VOCAB * DIM);
     auto pos_emb   = read_float_bin(data_dir + "pos_emb.bin",   (size_t)SEQ * DIM);
-    auto input_ids = read_int32_bin(data_dir + "input_ids_" + prompt + ".bin", SEQ);
     if (token_emb.empty() || input_ids.empty()) return {};
 
     std::vector<float> mid_in((size_t)SEQ * DIM);
@@ -125,24 +125,25 @@ static std::vector<float> encode_text(
     const float* feat_seq = (const float*)out_host.data().cptr();
     std::vector<float> feat_seq_buf(feat_seq, feat_seq + (size_t)SEQ * DIM);
 
+    // Gather: 复位 + 写配置寄存器 + 写数据 + 启动
     auto& reg = fpai_device.defaultRegRegion();
     uint32_t GATHER_BASE = 0x400C0000;
     reg.write(GATHER_BASE + 0x1DC, 1, false); std::this_thread::sleep_for(std::chrono::milliseconds(10));
     reg.write(GATHER_BASE + 0x1DC, 0, false); std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-    std::vector<int8_t> idx_buf(indices_size, 0);
-    idx_buf[0] = eot_idx & 0xFF; idx_buf[1] = (eot_idx>>8)&0xFF;
-    idx_buf[2] = (eot_idx>>16)&0xFF; idx_buf[3] = (eot_idx>>24)&0xFF;
-
-    const int8_t* feat_bytes = (const int8_t*)feat_seq_buf.data();
-    gather_chunk.write(0, (char*)idx_buf.data(), indices_size);
-    gather_chunk.write(indices_size + 4096, (char*)feat_bytes, src_data_size);
 
     reg.write(GATHER_BASE + 0x14, INDICES_LEN, false);
     reg.write(GATHER_BASE + 0x18, DATA_WIDTH_BEATS, false);
     reg.write(GATHER_BASE + 0x04, (indices_beats<<16) | (idx_addr & 0xFFFF), false);
     reg.write(GATHER_BASE + 0x0C, src_addr, false);
     reg.write(GATHER_BASE + 0x08, dst_addr, false);
+
+    std::vector<int8_t> idx_buf(indices_size, 0);
+    idx_buf[0] = eot_idx & 0xFF; idx_buf[1] = (eot_idx>>8)&0xFF;
+    idx_buf[2] = (eot_idx>>16)&0xFF; idx_buf[3] = (eot_idx>>24)&0xFF;
+    const int8_t* feat_bytes = (const int8_t*)feat_seq_buf.data();
+    gather_chunk.write(0, (char*)idx_buf.data(), indices_size);
+    gather_chunk.write(indices_size + 4096, (char*)feat_bytes, src_data_size);
+
     reg.write(GATHER_BASE + 0x00, 1, false);
 
     auto t0 = system_clock::now();
@@ -165,19 +166,10 @@ static std::vector<float> encode_text(
         for (int k = 0; k < DIM; k++) s += eot_feat[k] * proj[(size_t)k*DIM + i];
         text_feat[i] = s;
     }
-    l2norm(text_feat);   // 直接归一化好, 比对时省事
+    l2norm(text_feat);
     return text_feat;
 }
 
-// 现场分词: 单个 prompt → gen_input_ids.py → input_ids bin
-static bool tokenize_prompt(const std::string& prompt, const std::string& data_dir) {
-    std::string tmp_labels = data_dir + "query_tmp.txt";
-    { std::ofstream ofs(tmp_labels); if (!ofs) return false; ofs << prompt << "\n"; }
-    std::string cmd = "python3 ./gen_input_ids.py \"" + tmp_labels + "\" \"" + data_dir + "\"";
-    if (std::system(cmd.c_str()) != 0) { std::cerr << "[TEXT] gen_input_ids 失败" << std::endl; return false; }
-    std::ifstream chk(data_dir + "input_ids_" + prompt + ".bin", std::ios::binary);
-    return (bool)chk;
-}
 
 // ============================================================
 // main
@@ -261,6 +253,10 @@ int main(int argc, char* argv[])
     std::vector<std::string>        labels;
     std::vector<std::vector<float>> text_feats;
 
+    // C++ 内联分词器 (替代 Python gen_input_ids.py)
+    SimpleTokenizer tok(DATA_DIR + "merges.txt");
+    if (!tok.ok()) { std::cerr << "[main] 分词器初始化失败" << std::endl; return 1; }
+
     // 加标签 (编码 + 入库). 调用方不持锁; 内部编码耗时, 编完再锁入库
     auto add_label = [&](const std::string& prompt) -> bool {
         // 去重
@@ -270,8 +266,13 @@ int main(int argc, char* argv[])
                 std::cerr << "[LABEL] 已存在: " << prompt << std::endl; return false;
             }
         }
-        if (!tokenize_prompt(prompt, DATA_DIR)) return false;
-        auto feat = encode_text(prompt, DATA_DIR, device, text_session, text_network,
+        auto ids = tok.tokenize(prompt);
+        std::cerr << "[TOK] '" << prompt << "' ->";
+        for (int i = 0; i < 10; i++) std::cerr << " " << ids[i];
+        std::cerr << " ...";
+        for (int i = 70; i < 77; i++) std::cerr << " " << ids[i];
+        std::cerr << std::endl;
+        auto feat = encode_text(ids, DATA_DIR, device, text_session, text_network,
                                 fpai_device, gather_chunk, idx_addr, src_addr, dst_addr);
         if (feat.empty()) { std::cerr << "[LABEL] 编码失败: " << prompt << std::endl; return false; }
         std::lock_guard<std::mutex> lk(label_mutex);
@@ -297,17 +298,10 @@ int main(int argc, char* argv[])
         }
         if (init_labels.empty()) init_labels = {"a photo of a cat"};
 
-        // 把初始标签写回一个规范文件, 再批量生成 input_ids (避免依赖外部 labels.txt 是否存在)
-        std::string init_file = DATA_DIR + "init_labels.txt";
-        { std::ofstream ofs(init_file);
-          for (const auto& p : init_labels) ofs << p << "\n"; }
-        std::string cmd = "python3 ./gen_input_ids.py \"" + init_file + "\" \"" + DATA_DIR + "\"";
-        int ret = std::system(cmd.c_str());
-        if (ret != 0) std::cerr << "[main] 警告: 初始分词可能失败" << std::endl;
-
         std::cerr << "[main] 初始编码 " << init_labels.size() << " 个标签..." << std::endl;
         for (const auto& p : init_labels) {
-            auto feat = encode_text(p, DATA_DIR, device, text_session, text_network,
+            auto ids = tok.tokenize(p);
+            auto feat = encode_text(ids, DATA_DIR, device, text_session, text_network,
                                     fpai_device, gather_chunk, idx_addr, src_addr, dst_addr);
             if (!feat.empty()) { labels.push_back(p); text_feats.push_back(feat); }
         }

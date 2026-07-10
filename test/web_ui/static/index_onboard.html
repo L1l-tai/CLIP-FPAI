@@ -3,951 +3,715 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CLIP 图文匹配演示系统</title>
+<title>硬算子驱动的 CLIP 异构部署演示</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
-/* ============================================================
-   RESET & BASE
-   ============================================================ */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --bg-primary:#0a0e14;
-  --bg-secondary:#12171f;
-  --bg-card:#181e28;
-  --bg-input:#141a22;
-  --border:#1e2a3a;
-  --border-active:#2a3a4e;
-  --text-primary:#c8d6e5;
-  --text-secondary:#8a9bb5;
-  --text-dim:#556278;
-  --accent:#2ecc71;
-  --accent-dim:#1a7a42;
-  --accent-blue:#3498db;
-  --accent-orange:#e67e22;
-  --accent-red:#e74c3c;
-  --accent-yellow:#f1c40f;
-  --accent-cyan:#00d2d3;
+  --bg-primary:#0a0e14; --bg-secondary:#12171f; --bg-card:#181e28; --bg-input:#141a22;
+  --border:#1e2a3a; --border-active:#2a3a4e;
+  --text-primary:#c8d6e5; --text-secondary:#8a9bb5; --text-dim:#556278;
+  --accent:#2ecc71; --accent-dim:#1a7a42; --accent-blue:#3498db; --accent-orange:#e67e22;
+  --accent-red:#e74c3c; --accent-yellow:#f1c40f; --accent-cyan:#00d2d3;
   --gradient-card:linear-gradient(135deg,#181e28 0%,#161c26 100%);
-  --shadow:0 2px 8px rgba(0,0,0,.3);
-  --radius:6px;
+  --shadow:0 2px 8px rgba(0,0,0,.3); --radius:6px;
   --font-mono:'Consolas','Cascadia Code','Fira Code',monospace;
 }
-body{
-  font-family:'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
-  background:var(--bg-primary);
-  color:var(--text-primary);
-  min-height:100vh;
-  overflow-x:hidden;
-}
+body{font-family:'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg-primary);color:var(--text-primary);height:100vh;overflow:hidden;}
 
-/* ============================================================
-   HEADER - 系统状态栏
-   ============================================================ */
-#header{
-  background:var(--bg-secondary);
-  border-bottom:1px solid var(--border);
-  padding:8px 16px;
-  display:flex;
-  align-items:center;
-  gap:20px;
-  flex-wrap:wrap;
-  position:sticky;top:0;z-index:100;
-}
-#header .title{
-  font-size:15px;font-weight:700;
-  color:var(--accent);
-  white-space:nowrap;
-  letter-spacing:0.5px;
-}
-#header .status-group{
-  display:flex;gap:14px;flex-wrap:wrap;
-  font-size:11px;
-}
-.status-item{
-  display:flex;align-items:center;gap:5px;
-  padding:3px 8px;border-radius:3px;
-  background:var(--bg-input);border:1px solid var(--border);
-  white-space:nowrap;
-}
-.status-item .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
-.status-item .dot.on{background:var(--accent);box-shadow:0 0 6px var(--accent);}
-.status-item .dot.off{background:var(--accent-red);box-shadow:0 0 4px var(--accent-red);}
-.status-item .dot.warn{background:var(--accent-yellow);box-shadow:0 0 4px var(--accent-yellow);}
+/* ---------- Header ---------- */
+#header{background:var(--bg-secondary);border-bottom:1px solid var(--border);padding:8px 16px;display:flex;align-items:center;justify-content:space-between;height:52px;}
+#header .title{font-size:15px;font-weight:700;color:var(--text-primary);white-space:nowrap;}
+#header .title .accent{color:var(--accent);}
+.status-group{display:flex;gap:14px;flex-wrap:wrap;align-items:center;}
+.status-item{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-secondary);}
+.dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+.dot.on{background:var(--accent);box-shadow:0 0 6px var(--accent);}
+.dot.off{background:var(--accent-red);}
+.dot.warn{background:var(--accent-yellow);}
 
-/* ============================================================
-   MAIN GRID LAYOUT
-   ============================================================ */
-#main{
-  display:grid;
-  grid-template-columns:320px 1fr 340px;
-  grid-template-rows:auto 1fr auto;
-  gap:10px;
-  padding:10px;height:calc(100vh - 56px);
-}
-.card{
-  background:var(--bg-card);
-  border:1px solid var(--border);
-  border-radius:var(--radius);
-  padding:12px;
-  overflow:visible;
-}
-.card-header{
-  font-size:12px;font-weight:700;
-  letter-spacing:0.5px;color:var(--text-secondary);
-  margin-bottom:10px;padding-bottom:8px;
-  border-bottom:1px solid var(--border);
-  display:flex;align-items:center;justify-content:space-between;
-}
-.card-header .badge{
-  font-size:10px;padding:2px 7px;border-radius:10px;
-  background:var(--accent-dim);color:var(--accent);
-}
-
-/* ---- Camera Panel ---- */
-#camera-panel{
-  grid-column:2;grid-row:1/3;
-  display:flex;flex-direction:column;
-}
-#camera-container{
-  flex:1;position:relative;background:#000;
-  border-radius:4px;overflow:hidden;
-  display:flex;align-items:center;justify-content:center;
-  min-height:300px;
-}
-#camera-feed{width:100%;height:100%;object-fit:contain;display:block;}
-#camera-placeholder{
-  position:absolute;inset:0;display:flex;
-  align-items:center;justify-content:center;
-  color:var(--text-dim);font-size:14px;
-}
-#camera-overlay{
-  position:absolute;top:12px;left:12px;
-  background:rgba(0,0,0,.7);border:1px solid rgba(255,255,255,.15);
-  border-radius:6px;padding:8px 12px;font-size:12px;
-  font-family:var(--font-mono);line-height:1.6;
-  pointer-events:none;backdrop-filter:blur(4px);
-}
-#camera-overlay .ol-label{color:var(--accent);font-weight:700;font-size:13px;}
-#camera-overlay .ol-score{color:var(--text-secondary);}
-#camera-overlay .ol-fps{color:var(--accent-cyan);}
-
-/* ---- Control Panel (Left Column) ---- */
+/* ---------- Main grid (仪表盘型: 无实时画面) ---------- */
+#main{display:grid;grid-template-columns:300px 1fr 320px;grid-template-rows:1fr 150px;gap:10px;padding:10px;height:calc(100vh - 52px);}
 #control-panel{grid-column:1;grid-row:1/3;display:flex;flex-direction:column;gap:10px;overflow-y:auto;padding-right:2px;}
-
-/* ---- Right Column ---- */
+#center-panel{grid-column:2;grid-row:1/3;display:flex;flex-direction:column;gap:10px;overflow:hidden;}
 #right-col{grid-column:3;grid-row:1/3;display:flex;flex-direction:column;gap:10px;overflow-y:auto;padding-right:2px;}
 
-/* ---- Log Panel (Bottom) ---- */
-#log-panel{grid-column:1/4;grid-row:3;max-height:140px;}
+/* ---------- Card ---------- */
+.card{background:var(--gradient-card);border:1px solid var(--border);border-radius:var(--radius);padding:12px;box-shadow:var(--shadow);}
+.card-header{font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:6px;}
+.badge{font-size:10px;padding:1px 7px;border-radius:10px;background:var(--accent-dim);color:#fff;font-weight:600;}
+.badge.blue{background:#1c5a82;} .badge.orange{background:#a05616;}
 
-/* ============================================================
-   BUTTONS
-   ============================================================ */
-.btn{
-  padding:7px 12px;border:1px solid var(--border);
-  border-radius:4px;cursor:pointer;font-size:12px;
-  font-weight:600;font-family:inherit;
-  transition:all .15s;outline:none;
-}
-.btn:hover{filter:brightness(1.15);border-color:var(--border-active);}
-.btn:active{transform:scale(.97);}
-.btn-primary{background:var(--accent);color:#000;border-color:var(--accent);}
-.btn-blue{background:var(--accent-blue);color:#fff;border-color:var(--accent-blue);}
-.btn-orange{background:var(--accent-orange);color:#fff;border-color:var(--accent-orange);}
-.btn-red{background:var(--accent-red);color:#fff;border-color:var(--accent-red);}
-.btn-outline{background:transparent;color:var(--text-secondary);}
-.btn-sm{padding:4px 8px;font-size:10px;}
-.btn-block{width:100%;text-align:center;}
-.btn:disabled{opacity:.4;cursor:not-allowed;pointer-events:none;}
+/* ---------- Buttons / inputs ---------- */
+.btn{background:var(--bg-input);border:1px solid var(--border-active);color:var(--text-primary);padding:7px 12px;border-radius:var(--radius);font-size:12px;cursor:pointer;transition:all .15s;font-family:inherit;}
+.btn:hover:not(:disabled){background:var(--border-active);border-color:var(--accent);}
+.btn:disabled{opacity:.4;cursor:not-allowed;}
+.btn.primary{background:var(--accent-dim);border-color:var(--accent);}
+.btn.primary:hover:not(:disabled){background:var(--accent);color:#0a0e14;}
 .btn-group{display:flex;gap:6px;flex-wrap:wrap;}
+input[type=text],textarea{background:var(--bg-input);border:1px solid var(--border-active);color:var(--text-primary);padding:6px 9px;border-radius:var(--radius);font-size:12px;width:100%;font-family:inherit;}
+input[type=text]:focus,textarea:focus{outline:none;border-color:var(--accent);}
+input[type=range]{width:100%;accent-color:var(--accent);}
+label.fld{font-size:11px;color:var(--text-dim);display:block;margin-bottom:3px;}
 
-/* ============================================================
-   TEXT INPUT
-   ============================================================ */
-textarea,input[type=text]{
-  background:var(--bg-input);border:1px solid var(--border);
-  border-radius:4px;color:var(--text-primary);padding:8px 10px;
-  font-size:12px;font-family:var(--font-mono);
-  resize:vertical;outline:none;width:100%;
-}
-textarea:focus,input:focus{border-color:var(--accent);}
-#label-input{min-height:120px;line-height:1.6;}
-.text-status{
-  font-size:10px;color:var(--text-dim);margin-top:4px;
-  display:flex;justify-content:space-between;
-}
+/* ---------- 阈值滑块 ---------- */
+#thr-card .thr-val{font-family:var(--font-mono);font-size:16px;font-weight:700;color:var(--accent);}
+#thr-card .thr-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
 
-/* ============================================================
-   TOP-K RESULTS
-   ============================================================ */
-#topk-list{list-style:none;}
-#topk-list li{
-  display:flex;align-items:center;gap:8px;padding:6px 8px;
-  border-bottom:1px solid rgba(255,255,255,.03);
-  font-size:12px;font-family:var(--font-mono);
-}
-#topk-list li:first-child{
-  background:rgba(46,204,113,.08);border-radius:4px;
-}
-#topk-list .rank{color:var(--text-dim);width:18px;}
-#topk-list .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-#topk-list .score{color:var(--accent);font-weight:600;}
-#topk-list .bar-wrap{width:60px;height:4px;background:rgba(255,255,255,.06);border-radius:2px;overflow:hidden;}
-#topk-list .bar-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .3s;}
-#topk-list li:first-child .bar-fill{background:var(--accent);}
-#topk-list li:nth-child(2) .bar-fill{background:var(--accent-blue);}
-#topk-list li:nth-child(3) .bar-fill{background:var(--accent-cyan);}
-#topk-list li:nth-child(4) .bar-fill,.bar-fill-d{background:var(--text-dim);}
-#topk-list li:nth-child(5) .bar-fill,.bar-fill-e{background:var(--text-dim);opacity:.5;}
+/* ---------- 主结果区: Top-1 大卡片 ---------- */
+#result-hero{flex-shrink:0;min-height:150px;display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:var(--radius);border:1px solid var(--border);background:var(--gradient-card);padding:18px;transition:all .2s;}
+#result-hero.matched{border-color:var(--accent);box-shadow:0 0 20px rgba(46,204,113,.15);}
+#result-hero.nomatch{border-color:var(--border);}
+#hero-label{font-size:46px;font-weight:800;letter-spacing:1px;line-height:1.1;text-align:center;}
+#hero-label.matched{color:var(--accent);}
+#hero-label.nomatch{color:var(--text-dim);}
+#hero-sub{font-size:14px;color:var(--text-secondary);margin-top:8px;font-family:var(--font-mono);}
+#hero-tag{margin-top:10px;font-size:11px;padding:3px 12px;border-radius:12px;font-weight:600;}
+#hero-tag.matched{background:var(--accent-dim);color:#fff;}
+#hero-tag.nomatch{background:#3a2020;color:var(--accent-red);}
 
-/* Top-1 Highlight */
-#top1-display{
-  text-align:center;padding:10px 0;
-}
-#top1-display .big-label{
-  font-size:32px;font-weight:800;color:var(--accent);
-  letter-spacing:1px;text-shadow:0 0 20px rgba(46,204,113,.3);
-}
-#top1-display .big-score{
-  font-size:14px;color:var(--text-secondary);margin-top:2px;
-}
+/* ---------- Top-K 列表 ---------- */
+#topk-list{list-style:none;display:flex;flex-direction:column;gap:7px;}
+#topk-list li{display:flex;align-items:center;gap:8px;font-size:12px;}
+#topk-list li.dim{opacity:.4;}
+#topk-list .rank{width:24px;color:var(--text-dim);font-family:var(--font-mono);font-size:11px;flex-shrink:0;}
+#topk-list .tk-label{width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;}
+#topk-list .bar-wrap{flex:1;height:14px;background:var(--bg-input);border-radius:7px;overflow:hidden;}
+#topk-list .bar-fill{height:100%;border-radius:7px;transition:width .3s;background:linear-gradient(90deg,var(--accent-dim),var(--accent));}
+#topk-list li.dim .bar-fill{background:var(--text-dim);}
+#topk-list .tk-score{width:52px;text-align:right;font-family:var(--font-mono);font-size:11px;color:var(--text-secondary);flex-shrink:0;}
 
-/* Bar Chart Container */
-#chart-container{height:160px;position:relative;}
-#similarity-chart{width:100%!important;height:100%!important;}
+/* ---------- 中央大区: tab 视图 ---------- */
+.mode-tabs{display:flex;gap:4px;margin-bottom:4px;flex-shrink:0;}
+.mode-tab{flex:1;padding:8px;text-align:center;font-size:12px;font-weight:600;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;color:var(--text-secondary);}
+.mode-tab.active{background:var(--accent-dim);color:#fff;border-color:var(--accent);}
+#center-body{flex:1;overflow:hidden;position:relative;}
+.center-view{position:absolute;inset:0;overflow-y:auto;display:none;}
+.center-view.active{display:block;}
 
-/* ============================================================
-   PIPELINE VISUALIZATION
-   ============================================================ */
-#pipeline{display:flex;flex-direction:column;gap:2px;}
-.pipe-stage{
-  display:flex;align-items:center;gap:10px;padding:7px 10px;
-  border-radius:4px;font-size:11px;position:relative;
-  transition:all .3s;
-}
-.pipe-stage.waiting{background:rgba(255,255,255,.02);color:var(--text-dim);}
-.pipe-stage.running{background:rgba(46,204,113,.08);color:var(--accent);}
-.pipe-stage.done{background:rgba(46,204,113,.04);color:var(--text-primary);}
-.pipe-stage.error{background:rgba(231,76,60,.08);color:var(--accent-red);}
-.pipe-indicator{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
-.pipe-indicator.waiting{background:var(--text-dim);}
-.pipe-indicator.running{background:var(--accent);animation:pulse .8s ease-in-out infinite;}
-.pipe-indicator.done{background:var(--accent);box-shadow:0 0 6px var(--accent);}
-.pipe-indicator.error{background:var(--accent-red);}
-@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.3;}}
-.pipe-name{flex:1;}
-.pipe-time{font-family:var(--font-mono);font-size:10px;color:var(--text-dim);}
-.pipe-arrow{text-align:center;color:var(--text-dim);font-size:10px;padding-left:14px;}
+/* ---------- 搜图网格 ---------- */
+#search-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;padding:2px;}
+.sr-item{border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;background:var(--bg-card);transition:all .15s;}
+.sr-item.best{border-color:var(--accent);box-shadow:0 0 12px rgba(46,204,113,.2);}
+.sr-item img{width:100%;height:130px;object-fit:cover;display:block;background:#000;}
+.sr-meta{padding:6px 8px;display:flex;justify-content:space-between;align-items:center;font-size:11px;}
+.sr-meta .cos{font-family:var(--font-mono);color:var(--accent);font-weight:600;}
+.sr-meta .nm{color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:90px;}
+#search-empty{padding:40px;text-align:center;color:var(--text-dim);font-size:14px;}
+#search-info{font-size:12px;color:var(--text-secondary);margin-bottom:10px;font-family:var(--font-mono);}
 
-/* ============================================================
-   HARD OP CARDS
-   ============================================================ */
+/* ---------- 算子分析视图 ---------- */
+#op-view-body{padding:8px;}
+#op-view-body img{max-width:100%;border-radius:var(--radius);border:1px solid var(--border);}
+
+/* ---------- 编码器状态卡片 ---------- */
+.enc-card{border:1px solid var(--border);border-radius:var(--radius);padding:10px;background:var(--bg-card);margin-bottom:8px;}
+.enc-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
+.enc-title{font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px;}
+.enc-state{font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;}
+.enc-state.idle{background:#2a2f38;color:var(--text-dim);}
+.enc-state.busy{background:var(--accent-dim);color:#fff;}
+.enc-state.run{background:#1c5a82;color:#fff;}
+.enc-path{font-size:10px;color:var(--text-dim);font-family:var(--font-mono);margin-bottom:8px;line-height:1.5;padding:6px;background:var(--bg-input);border-radius:4px;}
+.enc-path .hw{color:var(--accent-orange);font-weight:600;}
+.enc-metrics{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
+.enc-metric{background:var(--bg-input);border-radius:4px;padding:6px 8px;}
+.enc-metric .k{font-size:9px;color:var(--text-dim);}
+.enc-metric .v{font-size:13px;font-family:var(--font-mono);color:var(--text-primary);font-weight:600;}
+.enc-metric .v small{font-size:9px;color:var(--text-dim);font-weight:400;}
+
+/* ---------- 硬算子状态 ---------- */
 .hard-op-grid{display:flex;flex-direction:column;gap:6px;}
-.hard-op-card{
-  background:var(--gradient-card);border:1px solid var(--border);
-  border-radius:var(--radius);padding:10px;font-size:11px;
-  transition:border-color .3s;
-}
-.hard-op-card:hover{border-color:var(--border-active);}
-.hard-op-card .op-name{font-weight:700;color:var(--accent);font-size:12px;}
-.hard-op-card .op-row{display:flex;justify-content:space-between;margin-top:4px;}
-.hard-op-card .op-key{color:var(--text-dim);}
-.hard-op-card .op-val{font-family:var(--font-mono);}
-.hard-op-card .op-status{font-size:11px;margin-top:4px;}
-.hard-op-card .op-status.done{color:var(--accent);}
-.hard-op-card .op-status.cached{color:var(--accent-yellow);}
-.hard-op-card .op-status.running{color:var(--accent-blue);}
-.hard-op-card .op-status.error{color:var(--accent-red);}
+.hard-op-card{border:1px solid var(--border);border-radius:var(--radius);padding:8px;background:var(--bg-card);}
+.hard-op-card.active{border-color:var(--accent);}
+.op-name{font-size:12px;font-weight:600;margin-bottom:5px;}
+.op-row{display:flex;justify-content:space-between;font-size:10px;margin-top:3px;color:var(--text-secondary);}
+.op-row .op-val{color:var(--text-primary);font-family:var(--font-mono);}
+.op-status{margin-top:6px;font-size:10px;text-align:center;padding:3px;border-radius:3px;background:var(--bg-input);color:var(--text-dim);}
+.op-status.on{background:var(--accent-dim);color:#fff;}
 
-/* ============================================================
-   PERFORMANCE METRICS
-   ============================================================ */
-#perf-table{width:100%;font-size:11px;border-collapse:collapse;}
-#perf-table td{padding:5px 8px;border-bottom:1px solid rgba(255,255,255,.03);}
-#perf-table td:first-child{color:var(--text-dim);}
-#perf-table td:last-child{text-align:right;font-family:var(--font-mono);color:var(--text-primary);}
-#perf-table .perf-highlight{color:var(--accent)!important;font-weight:600;}
+/* ---------- 流水线 ---------- */
+#pipeline{display:flex;flex-direction:column;gap:1px;}
+.pipe-stage{display:flex;align-items:center;gap:8px;padding:5px 8px;font-size:11px;border-radius:4px;}
+.pipe-stage.done{background:rgba(46,204,113,.08);}
+.pipe-indicator{width:7px;height:7px;border-radius:50%;background:var(--text-dim);flex-shrink:0;}
+.pipe-stage.done .pipe-indicator{background:var(--accent);}
+.pipe-name{flex:1;color:var(--text-secondary);}
+.pipe-name small{color:var(--accent-orange);}
+.pipe-time{font-family:var(--font-mono);font-size:10px;color:var(--text-dim);}
 
-/* ============================================================
-   LOG WINDOW
-   ============================================================ */
-#log-window{
-  height:100%;overflow-y:auto;font-family:var(--font-mono);
-  font-size:11px;line-height:1.7;color:var(--text-secondary);
-  padding:4px 0;
-}
-#log-window .log-entry{display:flex;gap:8px;}
-#log-window .log-time{color:var(--text-dim);flex-shrink:0;}
-#log-window .log-msg{word-break:break-all;}
-#log-window .log-msg.error{color:var(--accent-red);}
-#log-window .log-msg.warning{color:var(--accent-yellow);}
+/* ---------- 日志 ---------- */
+#log-card{grid-column:2;grid-row:2;}
+#log-window{height:100%;overflow-y:auto;font-family:var(--font-mono);font-size:11px;line-height:1.6;}
+.log-entry{display:flex;gap:8px;padding:1px 0;}
+.log-entry .ts{color:var(--text-dim);flex-shrink:0;}
+.log-entry .msg{color:var(--text-secondary);word-break:break-all;}
+.log-entry.error .msg{color:var(--accent-red);}
+.log-entry.warning .msg{color:var(--accent-yellow);}
 
-/* ============================================================
-   MODE TABS
-   ============================================================ */
-.mode-tabs{display:flex;gap:4px;}
-.mode-tab{
-  flex:1;text-align:center;padding:6px;font-size:11px;font-weight:600;
-  border:1px solid var(--border);border-radius:4px;cursor:pointer;
-  transition:all .15s;color:var(--text-dim);background:transparent;
-}
-.mode-tab:hover{color:var(--text-primary);border-color:var(--border-active);}
-.mode-tab.active{color:var(--accent);border-color:var(--accent);background:rgba(46,204,113,.06);}
+/* ---------- error banner ---------- */
+#error-banner{display:none;background:#3a1515;border:1px solid var(--accent-red);color:#ff9b9b;padding:8px 12px;border-radius:var(--radius);font-size:12px;margin-bottom:6px;}
 
-/* ============================================================
-   ERROR BANNER
-   ============================================================ */
-#error-banner{
-  display:none;background:rgba(231,76,60,.12);border:1px solid var(--accent-red);
-  border-radius:4px;padding:8px 12px;margin-bottom:6px;
-  font-size:11px;color:var(--accent-red);align-items:center;gap:8px;
-}
-#error-banner .btn{margin-left:auto;}
+/* label list */
+#label-list span{display:inline-block;margin:2px 3px;padding:2px 8px;background:var(--bg-input);border-radius:3px;cursor:pointer;font-size:11px;}
+#label-list span:hover{background:var(--accent-red);color:#fff;}
 
-/* ============================================================
-   SCROLLBAR
-   ============================================================ */
-::-webkit-scrollbar{width:5px;height:5px;}
+::-webkit-scrollbar{width:7px;height:7px;}
+::-webkit-scrollbar-thumb{background:var(--border-active);border-radius:4px;}
 ::-webkit-scrollbar-track{background:transparent;}
-::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
-::-webkit-scrollbar-thumb:hover{background:var(--border-active);}
-
-/* ============================================================
-   RESPONSIVE
-   ============================================================ */
-@media(max-width:1100px){
-  #main{grid-template-columns:1fr;grid-template-rows:auto;}
-  #camera-panel{grid-column:1;min-height:350px;}
-  #control-panel,#right-col{grid-column:1;}
-  #log-panel{grid-column:1;}
-}
 </style>
 </head>
 <body>
 
-<!-- ============================================================
-     HEADER - 系统状态栏
-     ============================================================ -->
 <div id="header">
-  <span class="title">◆ CLIP 图文匹配演示系统</span>
-  <div class="status-group" id="status-bar">
-    <!-- JS 动态填充 -->
-  </div>
+  <div class="title">硬算子驱动的 <span class="accent">CLIP</span> 异构部署演示 <span style="font-size:11px;color:var(--text-dim);font-weight:400;">FMQL30TAI · FPGA+NPU</span></div>
+  <div class="status-group" id="status-bar"></div>
 </div>
 
-<!-- ============================================================
-     MAIN GRID
-     ============================================================ -->
 <div id="main">
-  <div id="error-banner" style="grid-column:1/4;">
-    <span id="error-text"></span>
-    <button class="btn btn-sm btn-outline" onclick="dismissError()">✕</button>
-  </div>
 
-  <!-- ============ LEFT: 控制面板 ============ -->
+  <!-- ============ 左: 控制面板 ============ -->
   <div id="control-panel">
+    <div id="error-banner"></div>
 
-    <!-- Control Buttons -->
     <div class="card">
-      <div class="card-header">推理控制 (clip_app)</div>
+      <div class="card-header">推理控制</div>
+      <div id="clip-status" style="font-size:12px;font-weight:600;text-align:center;padding:6px 0;">⚫ 未启动</div>
+      <div style="font-size:10px;color:var(--text-dim);margin-bottom:8px;text-align:center;" id="mode-hint">等待 clip_app 就绪...</div>
+      <div style="font-size:10px;text-align:center;margin-bottom:4px;" id="warmup-hint">模型预热: 未执行</div>
       <div class="btn-group" style="flex-direction:column;">
-        <button class="btn btn-blue btn-block" onclick="sendMsg({type:'load_models'})" id="btn-load">
-          🔌 启动 clip_app
-        </button>
-        <div id="clip-status" style="font-size:12px;font-weight:600;text-align:center;padding:6px 0;">
-          <span style="color:var(--text-dim);">⚫ 未启动</span>
+        <button class="btn" id="btn-warmup" onclick="sendMsg({type:'run_warmup'})">模型预热</button>
+        <button class="btn primary" id="btn-load-models" onclick="sendMsg({type:'load_models'})">启动 clip_app</button>
+        <div class="btn-group" style="margin-top:2px;">
+          <button class="btn" id="btn-mode-dual" onclick="sendMsg({type:'start_inference'})" style="flex:1;" disabled>实时分类</button>
+          <button class="btn" id="btn-mode-search" onclick="sendMsg({type:'clip_cmd',cmd:'mode search'});setClipState('search')" style="flex:1;" disabled>文本搜图</button>
         </div>
+      </div>
+    </div>
 
-        <!-- 模式选择 (READY 后启用) -->
-        <hr style="border-color:var(--border);margin:6px 0;">
-        <div style="font-size:10px;color:var(--text-dim);margin-bottom:4px;" id="mode-hint">等待 clip_app 就绪...</div>
+    <!-- 阈值滑块 -->
+    <div class="card" id="thr-card">
+      <div class="card-header">匹配阈值</div>
+      <div class="thr-row">
+        <span style="font-size:11px;color:var(--text-dim);">cos ≥ 阈值 判定为匹配</span>
+        <span class="thr-val" id="thr-val">0.25</span>
+      </div>
+      <input type="range" id="thr-slider" min="0.23" max="0.26" step="0.002" value="0.25" oninput="onThrChange(this.value)">
+      <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-dim);margin-top:2px;">
+        <span>0.23 宽松</span><span>0.26 严格</span>
+      </div>
+    </div>
+
+    <!-- 分类: 标签管理 -->
+    <div class="card" id="dual-section" style="display:none;">
+      <div class="card-header">候选标签</div>
+      <div class="btn-group" style="margin-bottom:6px;">
+        <input type="text" id="add-label-input" class="dual-input" placeholder="输入标签英文" onkeydown="if(event.key==='Enter')addLabel()">
+        <button class="btn dual-btn" onclick="addLabel()">添加</button>
+      </div>
+      <div id="label-list" style="max-height:140px;overflow-y:auto;"></div>
+    </div>
+
+    <!-- 搜图: 采集/查询 -->
+    <div class="card" id="search-section" style="display:none;">
+      <div class="card-header">文本搜图</div>
+      <div style="font-size:10px;color:var(--text-dim);margin-bottom:6px;">建库: 实时采集 或 导入视频帧</div>
+      <div class="btn-group" style="margin-bottom:6px;">
+        <button class="btn search-btn" onclick="sendMsg({type:'clip_cmd',cmd:'cap'})" style="flex:1;">实时采集</button>
+        <button class="btn search-btn" onclick="capSnap()" style="flex:1;">拍一张</button>
+        <button class="btn search-btn" onclick="sendMsg({type:'clip_cmd',cmd:'done'})" style="flex:1;">结束采集</button>
+      </div>
+      <div style="margin-bottom:6px;">
+        <label class="fld">导入视频帧目录 (vid dir fps stride)</label>
+        <input type="text" id="vid-cmd-input" class="search-input" placeholder="vid board_data/frames/ 2.4 1">
+        <button class="btn search-btn" style="width:100%;margin-top:4px;" onclick="sendVid()">建库</button>
+      </div>
+      <div style="border-top:1px solid var(--border);padding-top:6px;">
+        <label class="fld">查询文本</label>
         <div class="btn-group">
-          <button class="btn btn-primary mode-btn" id="btn-mode-dual"
-                  onclick="sendMsg({type:'clip_cmd',cmd:'mode dual'})" disabled>📋 分类模式</button>
-          <button class="btn btn-orange mode-btn" id="btn-mode-search"
-                  onclick="sendMsg({type:'clip_cmd',cmd:'mode search'})" disabled>🔍 搜图模式</button>
-        </div>
-
-        <!-- 分类模式专用 -->
-        <div id="dual-section" style="display:none;">
-          <hr style="border-color:var(--border);margin:6px 0;">
-          <button class="btn btn-primary btn-block dual-btn" onclick="sendMsg({type:'start_inference'})" disabled>▶ 开始推理</button>
-          <div class="btn-group">
-            <input type="text" id="add-label-input" class="dual-input" placeholder="添加标签..." disabled>
-            <button class="btn btn-sm btn-primary dual-btn" onclick="addLabel()" disabled>➕</button>
-          </div>
-          <div id="label-list" style="max-height:100px;overflow-y:auto;font-size:11px;"></div>
-          <button class="btn btn-outline btn-block btn-sm dual-btn" onclick="sendMsg({type:'clip_cmd',cmd:'list'})" disabled>📋 刷新</button>
-        </div>
-
-        <!-- 搜图模式专用 -->
-        <div id="search-section" style="display:none;">
-          <hr style="border-color:var(--border);margin:6px 0;">
-          <div class="btn-group">
-            <input type="text" id="search-query-input" class="search-input" placeholder="搜图查询..." disabled>
-            <button class="btn btn-sm btn-primary search-btn" onclick="searchQuery()" disabled>🔍</button>
-          </div>
-          <button class="btn btn-outline btn-block btn-sm search-btn" onclick="sendMsg({type:'clip_cmd',cmd:'cap'})" disabled>📷 采集</button>
-          <button class="btn btn-outline btn-block btn-sm search-btn" onclick="sendMsg({type:'clip_cmd',cmd:'play'})" disabled>▶ 回放</button>
+          <input type="text" id="search-query-input" class="search-input" placeholder="如 a red car" onkeydown="if(event.key==='Enter')searchQuery()">
+          <button class="btn primary search-btn" onclick="searchQuery()">搜索</button>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- ============ CENTER: 摄像头画面 ============ -->
-  <div id="camera-panel" class="card">
-    <div class="card-header">
-      <span id="center-panel-title">实时摄像头画面</span>
-      <span style="font-size:10px;color:var(--text-dim);" id="frame-info">--</span>
+  <!-- ============ 中: 主展示区 ============ -->
+  <div id="center-panel">
+    <div class="mode-tabs">
+      <div class="mode-tab active" data-view="inference" onclick="switchView('inference')">实时分类</div>
+      <div class="mode-tab" data-view="search" onclick="switchView('search')">搜图结果</div>
+      <div class="mode-tab" data-view="operator" onclick="switchView('operator')">算子分析</div>
     </div>
-    <div id="camera-container">
-      <img id="camera-feed" src="" alt="摄像头画面" style="display:none;">
-      <div id="camera-placeholder">
-        📷 等待摄像头画面...
-      </div>
-      <div id="camera-overlay">
-        <div class="ol-label" id="ol-top1">Top-1: --</div>
-        <div class="ol-score" id="ol-score">相似度: --</div>
-        <div class="ol-fps" id="ol-fps">推理帧率: --</div>
-        <div class="ol-fps" id="ol-frame">帧号: --</div>
-      </div>
-      <!-- 文本搜图结果（覆盖摄像头画面） -->
-      <div id="search-view" style="display:none;position:absolute;inset:0;background:var(--bg-primary);flex-direction:column;overflow-y:auto;padding:8px;z-index:10;">
-        <div id="search-view-info" style="font-size:11px;color:var(--text-dim);margin-bottom:8px;"></div>
-        <div id="search-view-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;"></div>
-        <div id="search-view-empty" style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:14px;">输入查询文本和图片文件夹，点击搜索</div>
-      </div>
+    <div id="center-body">
 
-      <!-- 算子测试结果（覆盖摄像头画面，全宽，单页切换） -->
-      <div id="operator-view" style="display:none;position:absolute;inset:0;background:var(--bg-primary);overflow-y:auto;padding:16px;z-index:10;">
-        <div id="op-result-title" style="font-size:14px;font-weight:600;color:var(--accent);margin-bottom:10px;"></div>
-        <div id="op-result-body" style="display:flex;align-items:center;justify-content:center;min-height:calc(100% - 40px);">
-          <span style="color:var(--text-secondary);font-size:14px;">点击右侧按钮运行算子测试</span>
+      <!-- 分类视图 -->
+      <div class="center-view active" id="view-inference">
+        <div id="result-hero" class="nomatch">
+          <div id="hero-label" class="nomatch">等待推理</div>
+          <div id="hero-sub">启动 clip_app 并进入实时分类</div>
+          <div id="hero-tag" class="nomatch" style="display:none;"></div>
+        </div>
+        <div class="card" style="margin-top:10px;">
+          <div class="card-header">Top-K 匹配排序 <span style="font-size:10px;color:var(--text-dim);font-weight:400;">灰色=低于阈值</span></div>
+          <ul id="topk-list"></ul>
+        </div>
+        <div class="card" style="margin-top:10px;">
+          <div class="card-header">相似度分布</div>
+          <div style="height:180px;"><canvas id="similarity-chart"></canvas></div>
         </div>
       </div>
+
+      <!-- 搜图视图 -->
+      <div class="center-view" id="view-search">
+        <div id="search-info">输入查询文本，显示所有匹配图片</div>
+        <div id="search-grid"></div>
+        <div id="search-empty">进入搜图模式 → 建库 → 输入查询文本</div>
+      </div>
+
+      <!-- 算子分析视图 (原版完整界面) -->
+      <div class="center-view" id="view-operator">
+        <div class="hard-op-grid" style="margin-bottom:10px;">
+          <div class="card">
+            <div class="card-header">FWHT 激活值平滑 <span class="badge blue">FPGA</span></div>
+            <div style="padding:8px;font-size:11px;color:var(--text-secondary);line-height:1.6;">
+              768x30 FP16 · 块对角 64-pt Walsh-Hadamard<br>
+              离群值扩散 + INT8/INT4 量化评估
+            </div>
+            <div style="padding:0 8px 8px;">
+              <button class="btn" onclick="sendMsg({type:'run_fwht_hardware'})">运行 FPGA</button>
+              <button class="btn" onclick="sendMsg({type:'run_fwht_visualize'})" style="margin-left:4px;">可视化</button>
+              <span id="fwht-hw-info" style="font-size:10px;color:var(--text-dim);margin-left:8px;"></span>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">Gather 数据提取 <span class="badge orange">FPGA</span></div>
+            <div style="padding:8px;font-size:11px;color:var(--text-secondary);line-height:1.6;">
+              256x256 矩阵 → 77 索引选取 → 77x256 输出<br>
+              模拟 CLIP 文本 token embedding 提取
+            </div>
+            <div style="padding:0 8px 8px;">
+              <button class="btn" onclick="sendMsg({type:'run_gather_hardware'})">运行 FPGA</button>
+              <button class="btn" onclick="sendMsg({type:'run_gather_visualize'})" style="margin-left:4px;">可视化</button>
+              <span id="gather-hw-info" style="font-size:10px;color:var(--text-dim);margin-left:8px;"></span>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">Resize/Crop 预处理 <span class="badge">FPGA</span></div>
+            <div style="padding:8px;font-size:11px;color:var(--text-secondary);line-height:1.6;">
+              640x480 → Crop 480 → Bilinear → 224x224<br>
+              中心裁剪 + 双线性插值
+            </div>
+            <div style="padding:0 8px 8px;">
+              <button class="btn" onclick="sendMsg({type:'run_resize_hardware'})">运行 FPGA</button>
+              <button class="btn" onclick="sendMsg({type:'run_resize_visualize'})" style="margin-left:4px;">可视化</button>
+              <span id="resize-hw-info" style="font-size:10px;color:var(--text-dim);margin-left:8px;"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 算子结果展示区 -->
+        <div class="card">
+          <div id="op-result-title" style="font-size:14px;font-weight:600;color:var(--accent);margin-bottom:10px;"></div>
+          <div id="op-result-body" style="text-align:center;color:var(--text-dim);padding:20px;">点击上方"运行 FPGA"或"可视化"查看算子结果</div>
+        </div>
+      </div>
+
     </div>
   </div>
 
-  <!-- ============ RIGHT: 结果 + 硬算子 + 性能 + 搜图 ============ -->
+  <!-- ============ 右: 编码器 + 硬算子 + 流水线 ============ -->
   <div id="right-col">
-
-    <!-- 右侧栏选项卡 -->
-    <div class="card" style="padding:4px;">
-      <div class="mode-tabs" style="flex-shrink:0;">
-        <button class="mode-tab active" data-view="inference" onclick="switchRightView('inference')">📊 实时推理</button>
-        <button class="mode-tab" data-view="search" onclick="switchRightView('search')">🔍 文本搜图</button>
-        <button class="mode-tab" data-view="operator" onclick="switchRightView('operator')">⚙️ 算子测试</button>
+    <div class="card">
+      <div class="card-header">编码器状态</div>
+      <!-- 文本编码器 -->
+      <div class="enc-card" id="enc-text">
+        <div class="enc-head">
+          <div class="enc-title">📝 文本编码器</div>
+          <span class="enc-state idle" id="enc-text-state">空闲</span>
+        </div>
+        <div class="enc-path">CPU 查表 → NPU (Transformer) → <span class="hw">FPGA Gather</span> → CPU 投影</div>
+        <div class="enc-metrics">
+          <div class="enc-metric"><div class="k">已编码标签</div><div class="v" id="enc-text-count">0</div></div>
+          <div class="enc-metric"><div class="k">Gather 硬算子</div><div class="v" id="enc-text-gather">-- <small>us</small></div></div>
+        </div>
+        <div style="font-size:9px;color:var(--text-dim);margin-top:5px;text-align:center;" id="enc-text-cur"></div>
+      </div>
+      <!-- 图像编码器 -->
+      <div class="enc-card" id="enc-image">
+        <div class="enc-head">
+          <div class="enc-title">🖼️ 图像编码器</div>
+          <span class="enc-state idle" id="enc-image-state">空闲</span>
+        </div>
+        <div class="enc-path">SDI → <span class="hw">FPGA Resize</span> → NPU (ViT-B/32)</div>
+        <div class="enc-metrics">
+          <div class="enc-metric"><div class="k">已处理帧</div><div class="v" id="enc-image-count">0</div></div>
+          <div class="enc-metric"><div class="k">Resize 硬算子</div><div class="v" id="enc-image-resize">-- <small>us</small></div></div>
+          <div class="enc-metric"><div class="k">FWHT 硬算子</div><div class="v" id="enc-image-fwht">-- <small>us</small></div></div>
+          <div class="enc-metric"><div class="k">单帧总耗时</div><div class="v" id="enc-image-frame">-- <small>ms</small></div></div>
+          <div class="enc-metric"><div class="k">推理帧率</div><div class="v" id="enc-image-fps">-- <small>fps</small></div></div>
+        </div>
       </div>
     </div>
 
-    <!-- === 视图 1: 实时推理 === -->
-    <div id="view-inference" style="display:flex;flex-direction:column;gap:10px;">
-
-    <!-- Top-1 Result -->
     <div class="card">
-      <div class="card-header">最佳匹配结果</div>
-      <div id="top1-display">
-        <div class="big-label" id="top1-big">--</div>
-        <div class="big-score" id="top1-score">相似度: --</div>
-      </div>
-    </div>
-
-    <!-- Top-K List -->
-    <div class="card">
-      <div class="card-header">Top-K 排序结果</div>
-      <ul id="topk-list">
-        <li><span class="rank">#1</span><span class="label">--</span><div class="bar-wrap"><div class="bar-fill" style="width:0%"></div></div><span class="score">--</span></li>
-        <li><span class="rank">#2</span><span class="label">--</span><div class="bar-wrap"><div class="bar-fill" style="width:0%"></div></div><span class="score">--</span></li>
-        <li><span class="rank">#3</span><span class="label">--</span><div class="bar-wrap"><div class="bar-fill" style="width:0%"></div></div><span class="score">--</span></li>
-        <li><span class="rank">#4</span><span class="label">--</span><div class="bar-wrap"><div class="bar-fill-d" style="width:0%"></div></div><span class="score">--</span></li>
-        <li><span class="rank">#5</span><span class="label">--</span><div class="bar-wrap"><div class="bar-fill-e" style="width:0%"></div></div><span class="score">--</span></li>
-      </ul>
-      <!-- Bar Chart -->
-      <div id="chart-container"><canvas id="similarity-chart"></canvas></div>
-    </div>
-
-    <!-- Inference Pipeline -->
-    <div class="card">
-      <div class="card-header">推理流水线</div>
-      <div id="pipeline">
-        <div class="pipe-stage waiting"><span class="pipe-indicator waiting"></span><span class="pipe-name">摄像头采集</span><span class="pipe-time"></span></div>
-        <div class="pipe-arrow">↓</div>
-        <div class="pipe-stage waiting"><span class="pipe-indicator waiting"></span><span class="pipe-name">Resize/Crop 裁剪缩放 <small>(FPGA)</small></span><span class="pipe-time"></span></div>
-        <div class="pipe-arrow">↓</div>
-        <div class="pipe-stage waiting"><span class="pipe-indicator waiting"></span><span class="pipe-name">CLIP 图像编码器</span><span class="pipe-time"></span></div>
-        <div class="pipe-arrow">↓</div>
-        <div class="pipe-stage waiting"><span class="pipe-indicator waiting"></span><span class="pipe-name">FWHT 量化优化 <small>(FPGA)</small></span><span class="pipe-time"></span></div>
-        <div class="pipe-arrow">↓</div>
-        <div class="pipe-stage waiting"><span class="pipe-indicator waiting"></span><span class="pipe-name">图像特征向量</span><span class="pipe-time"></span></div>
-        <div class="pipe-arrow">↓</div>
-        <div class="pipe-stage waiting"><span class="pipe-indicator waiting"></span><span class="pipe-name">相似度计算 <small>(PC端)</small></span><span class="pipe-time"></span></div>
-        <div class="pipe-arrow">↓</div>
-        <div class="pipe-stage waiting"><span class="pipe-indicator waiting"></span><span class="pipe-name">Top-K 输出结果</span><span class="pipe-time"></span></div>
-      </div>
-    </div>
-
-    <!-- Hard Operator Cards -->
-    <div class="card">
-      <div class="card-header">硬算子状态 <span class="badge">FPGA</span></div>
+      <div class="card-header">硬算子实时状态 <span class="badge orange">FPGA</span></div>
       <div class="hard-op-grid">
         <div class="hard-op-card" id="op-resize">
-          <div class="op-name">🔲 Resize/Crop</div>
-          <div class="op-row"><span class="op-key">位置</span><span class="op-val">FPGA</span></div>
-          <div class="op-row"><span class="op-key">功能</span><span class="op-val">图像中心裁剪与缩放</span></div>
-          <div class="op-row"><span class="op-key">延迟</span><span class="op-val" id="op-resize-lat">--</span></div>
+          <div class="op-name">🔲 Resize / Crop</div>
+          <div class="op-row"><span>功能</span><span class="op-val">中心裁剪+双线性缩放</span></div>
+          <div class="op-row"><span>本次延迟</span><span class="op-val" id="op-resize-lat">--</span></div>
           <div class="op-status" id="op-resize-status">等待中</div>
         </div>
         <div class="hard-op-card" id="op-gather">
           <div class="op-name">📥 Gather</div>
-          <div class="op-row"><span class="op-key">位置</span><span class="op-val">FPGA</span></div>
-          <div class="op-row"><span class="op-key">功能</span><span class="op-val">文本编码器词元嵌入提取</span></div>
-          <div class="op-row"><span class="op-key">延迟</span><span class="op-val" id="op-gather-lat">--</span></div>
+          <div class="op-row"><span>功能</span><span class="op-val">词元嵌入提取</span></div>
+          <div class="op-row"><span>本次延迟</span><span class="op-val" id="op-gather-lat">--</span></div>
           <div class="op-status" id="op-gather-status">等待中</div>
         </div>
         <div class="hard-op-card" id="op-fwht">
-          <div class="op-name">⚡ FWHT</div>
-          <div class="op-row"><span class="op-key">位置</span><span class="op-val">FPGA</span></div>
-          <div class="op-row"><span class="op-key">功能</span><span class="op-val">激活值分布平滑与量化优化</span></div>
-          <div class="op-row"><span class="op-key">延迟</span><span class="op-val" id="op-fwht-lat">--</span></div>
+          <div class="op-name">🦋 FWHT</div>
+          <div class="op-row"><span>功能</span><span class="op-val">激活平滑(量化)</span></div>
+          <div class="op-row"><span>本次延迟</span><span class="op-val" id="op-fwht-lat">--</span></div>
           <div class="op-status" id="op-fwht-status">等待中</div>
         </div>
       </div>
     </div>
 
-    <!-- Performance Metrics -->
     <div class="card">
-      <div class="card-header">性能指标</div>
-      <table id="perf-table">
-        <tr><td>Resize/Crop 预处理</td><td id="perf-resize">--</td></tr>
-        <tr><td>Gather 嵌入提取</td><td id="perf-gather">--</td></tr>
-        <tr><td>FWHT 量化优化</td><td id="perf-fwht">--</td></tr>
-        <tr><td>CLIP 图像编码</td><td id="perf-img-enc">--</td></tr>
-        <tr><td>相似度计算</td><td id="perf-sim">--</td></tr>
-        <tr style="border-top:1px solid var(--border);"><td class="perf-highlight">总推理延迟</td><td class="perf-highlight" id="perf-total">--</td></tr>
-        <tr><td>推理频率</td><td id="perf-rate">--</td></tr>
-      </table>
-    </div>
-    </div><!-- /view-inference -->
-
-    <!-- === 视图 2: 文本搜图 === -->
-    <div id="view-search" style="display:none;flex-direction:column;gap:10px;">
-    <div class="card">
-      <div class="card-header">🔍 文本搜图（以文找图）</div>
-      <div style="display:flex;flex-direction:column;gap:6px;">
-        <label style="font-size:10px;color:var(--text-dim);">图片文件夹路径</label>
-        <div class="btn-group" style="align-items:center;">
-          <input type="text" id="search-folder" placeholder="例如: d:/dataset/images" style="flex:1;font-size:10px;padding:5px 8px;">
-          <button class="btn btn-sm btn-outline" onclick="listImages()" style="white-space:nowrap;">📂 浏览</button>
-        </div>
-        <div id="folder-info" style="font-size:10px;color:var(--text-dim);margin-top:2px;">未选择文件夹</div>
-
-        <label style="font-size:10px;color:var(--text-dim);margin-top:4px;">查询文本</label>
-        <div class="btn-group">
-          <input type="text" id="search-query" placeholder="例如: a cat sleeping on a sofa 或 一只猫在睡觉" style="flex:1;font-size:12px;padding:6px 8px;">
-        </div>
-
-        <div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
-          <label style="font-size:10px;color:var(--text-dim);white-space:nowrap;">返回</label>
-          <select id="search-topk" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);padding:4px 6px;font-size:10px;">
-            <option value="5" selected>Top-5</option>
-            <option value="10">Top-10</option>
-            <option value="20">Top-20</option>
-          </select>
-          <button class="btn btn-primary btn-sm" onclick="doSearchImages()" style="white-space:nowrap;font-size:12px;padding:6px 14px;">🔍 搜索</button>
-        </div>
+      <div class="card-header">推理流水线</div>
+      <div id="pipeline">
+        <div class="pipe-stage" data-stage="cam"><span class="pipe-indicator"></span><span class="pipe-name">SDI 采集</span><span class="pipe-time"></span></div>
+        <div class="pipe-stage" data-stage="resize"><span class="pipe-indicator"></span><span class="pipe-name">Resize/Crop <small>(FPGA)</small></span><span class="pipe-time" id="pipe-resize-t"></span></div>
+        <div class="pipe-stage" data-stage="vis"><span class="pipe-indicator"></span><span class="pipe-name">图像编码器 <small>(NPU)</small></span><span class="pipe-time" id="pipe-vis-t"></span></div>
+        <div class="pipe-stage" data-stage="feat"><span class="pipe-indicator"></span><span class="pipe-name">图像特征</span><span class="pipe-time"></span></div>
+        <div class="pipe-stage" data-stage="sim"><span class="pipe-indicator"></span><span class="pipe-name">相似度计算 <small>(PC)</small></span><span class="pipe-time"></span></div>
+        <div class="pipe-stage" data-stage="topk"><span class="pipe-indicator"></span><span class="pipe-name">Top-K 结果</span><span class="pipe-time"></span></div>
       </div>
     </div>
-    </div><!-- /view-search -->
+  </div>
 
-    <!-- === 视图 3: 算子测试 === -->
-    <div id="view-operator" style="display:none;flex-direction:column;gap:8px;">
-
-      <div class="card">
-        <div class="card-header">FWHT 激活值平滑</div>
-        <div style="padding:8px;font-size:11px;color:var(--text-secondary);line-height:1.6;">
-          768x30 FP16 · 块对角 64-pt Walsh-Hadamard<br>
-          离群值扩散 + INT8/INT4 量化评估
-        </div>
-        <div style="padding:0 8px 8px;">
-          <button class="btn btn-blue btn-sm" onclick="sendMsg({type:'run_fwht_hardware'})">运行 FPGA</button>
-          <button class="btn btn-outline btn-sm" onclick="sendMsg({type:'run_fwht_visualize'})" style="margin-left:4px;">可视化</button>
-          <span id="fwht-hw-info" style="font-size:10px;color:var(--text-dim);margin-left:8px;"></span>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">Gather 数据提取</div>
-        <div style="padding:8px;font-size:11px;color:var(--text-secondary);line-height:1.6;">
-          256x256 矩阵 → 77 索引选取 → 77x256 输出<br>
-          模拟 CLIP 文本 token embedding 提取
-        </div>
-        <div style="padding:0 8px 8px;">
-          <button class="btn btn-orange btn-sm" onclick="sendMsg({type:'run_gather_hardware'})">运行 FPGA</button>
-          <button class="btn btn-outline btn-sm" onclick="sendMsg({type:'run_gather_visualize'})" style="margin-left:4px;">可视化</button>
-          <span id="gather-hw-info" style="font-size:10px;color:var(--text-dim);margin-left:8px;"></span>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-header">Resize/Crop 预处理</div>
-        <div style="padding:8px;font-size:11px;color:var(--text-secondary);line-height:1.6;">
-          640x480 → Crop 480 → Bilinear → 224x224<br>
-          中心裁剪 + 双线性插值
-        </div>
-        <div style="padding:0 8px 8px;">
-          <button class="btn btn-green btn-sm" onclick="sendMsg({type:'run_resize_hardware'})">运行 FPGA</button>
-          <button class="btn btn-outline btn-sm" onclick="sendMsg({type:'run_resize_visualize'})" style="margin-left:4px;">可视化</button>
-          <span id="resize-hw-info" style="font-size:10px;color:var(--text-dim);margin-left:8px;"></span>
-        </div>
-      </div>
-
-    </div><!-- /view-operator -->
-
-  </div><!-- /right-col -->
-
-  <!-- ============ BOTTOM: 运行日志 ============ -->
-  <div id="log-panel" class="card">
-    <div class="card-header">
-      运行日志
-      <button class="btn btn-sm btn-outline" onclick="clearLogs()">清空</button>
-    </div>
-    <div id="log-window">
-      <div class="log-entry"><span class="log-time">--:--:--</span><span class="log-msg">等待连接...</span></div>
-    </div>
+  <!-- ============ 底: 日志 ============ -->
+  <div class="card" id="log-card">
+    <div class="card-header">运行日志</div>
+    <div id="log-window"></div>
   </div>
 
 </div>
 
-<!-- ============================================================
-     JAVASCRIPT
-     ============================================================ -->
 <script>
 // ============================================================
-// WebSocket 连接
+// 全局状态
 // ============================================================
-const WS_URL = `ws://${location.host}/ws`;
 let ws = null;
 let reconnectTimer = null;
+let THRESHOLD = 0.25;          // 匹配阈值 (滑块可调)
+const BAR_LOW = 0.25, BAR_HIGH = 0.85;  // 进度条映射区间
+let chartInstance = null;
+let lastTopk = [];             // 缓存最近一次分类 Top-K, 阈值变动时重渲染
+let lastSearch = null;         // 缓存最近搜图结果
+let inferFrameTs = [];         // 计算推理帧率
 
+// ============================================================
+// WebSocket
+// ============================================================
 function connectWS(){
-  if(ws && ws.readyState === WebSocket.OPEN) return;
-  ws = new WebSocket(WS_URL);
-
-  ws.onopen = () => {
-    console.log('[WS] 已连接');
-    addLog('WebSocket 已连接。');
-    clearReconnect();
-  };
-
-  ws.onmessage = (ev) => {
-    try{
-      const msg = JSON.parse(ev.data);
-      handleMessage(msg);
-    }catch(e){ console.error('[WS] 解析错误:', e); }
-  };
-
-  ws.onclose = () => {
-    console.log('[WS] 已断开');
-    addLog('WebSocket 已断开，尝试重连...', 'warning');
-    scheduleReconnect();
-  };
-
-  ws.onerror = () => {
-    addLog('WebSocket 通信错误。', 'error');
-  };
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const url = `${proto}://${location.host}/ws`;
+  addLog('连接服务器: ' + url);
+  ws = new WebSocket(url);
+  ws.onopen = () => { addLog('WebSocket 已连接'); clearReconnect(); };
+  ws.onmessage = (e) => { try{ handleMessage(JSON.parse(e.data)); }catch(err){ console.error(err); } };
+  ws.onclose = () => { addLog('WebSocket 断开', 'warning'); scheduleReconnect(); };
+  ws.onerror = () => { addLog('WebSocket 错误', 'error'); };
 }
-
-function scheduleReconnect(){
-  if(reconnectTimer) return;
-  reconnectTimer = setInterval(() => {
-    if(ws && ws.readyState === WebSocket.OPEN) { clearReconnect(); return; }
-    connectWS();
-  }, 2000);
-}
-
-function clearReconnect(){
-  if(reconnectTimer){ clearInterval(reconnectTimer); reconnectTimer = null; }
-}
-
+function scheduleReconnect(){ if(!reconnectTimer) reconnectTimer = setInterval(connectWS, 3000); }
+function clearReconnect(){ if(reconnectTimer){ clearInterval(reconnectTimer); reconnectTimer=null; } }
 function sendMsg(obj){
-  if(!ws || ws.readyState !== WebSocket.OPEN){
-    addLog('错误：未连接到服务器。', 'error');
-    return;
-  }
-  ws.send(JSON.stringify(obj));
+  if(ws && ws.readyState === WebSocket.OPEN){ ws.send(JSON.stringify(obj)); }
+  else { addLog('未连接，无法发送', 'warning'); }
 }
 
 // ============================================================
-// 消息处理
+// 消息分发
 // ============================================================
 function handleMessage(msg){
   switch(msg.type){
-
-    case 'frame':
-      const img = document.getElementById('camera-feed');
-      img.src = 'data:image/jpeg;base64,' + msg.data;
-      img.style.display = 'block';
-      document.getElementById('camera-placeholder').style.display = 'none';
-      document.getElementById('ol-frame').textContent = '帧号: #' + msg.frame_id;
-      document.getElementById('ol-fps').textContent = '预览帧率: ' + (msg.fps_preview || '--') + ' FPS';
-      document.getElementById('frame-info').textContent = '#' + msg.frame_id;
-      break;
-
-    case 'inference_result':
-      updateResults(msg.data);
-      updatePerfTable(msg.data.timing);
-      updateHardOps(msg.data.hard_ops);
-      break;
-
-    case 'pipeline_state':
-      updatePipeline(msg.stages);
-      break;
-
-    case 'system_status':
-      updateStatusBar(msg.data);
-      break;
-
-    case 'image_list':
-      handleImageList(msg);
-      break;
-
-    case 'search_result':
-      handleSearchResult(msg);
-      break;
-
-    case 'log':
-      addLogEntry(msg.timestamp, msg.message, msg.level || '');
-      break;
-
-    case 'hard_op_update':
-      updateSingleHardOp(msg.op, msg.data);
-      break;
-
-    case 'fwht_result':
-      showOpAnalysis('FWHT', msg.data);
-      break;
-
-    case 'fwht_hw_result':
-      document.getElementById('fwht-hw-info').textContent =
-        `${msg.data.cycles||0} cycles (${msg.data.us||0} us)`;
-      break;
-
-    case 'resize_hw_result':
-      document.getElementById('resize-hw-info').textContent =
-        `${msg.data.cycles||0} cycles (${msg.data.us||0} us)`;
-      break;
-
-    case 'gather_hw_result':
-      document.getElementById('gather-hw-info').textContent =
-        `${msg.data.cycles||0} cycles (${msg.data.us||0} us)`;
-      break;
-
-    case 'resize_result':
-      showOpAnalysis('Resize', msg.data);
-      break;
-
-    case 'gather_result':
-      showOpAnalysis('Gather', msg.data);
-      break;
-
+    case 'system_status': updateStatusBar(msg.data); updateEncoderCards(msg.data); updateWarmupStatus(msg.data.warmup); break;
+    case 'log': addLogEntry(msg.timestamp, msg.message, msg.level||''); break;
     case 'model_loaded':
-      if(msg.success){
-        setClipState('loading');
-        addLog('clip_app 启动成功，等待就绪...');
-      } else {
-        setClipState('error');
-        addLog('错误：CLIP 模型加载失败！请检查模型文件和 ONNX Runtime。', 'error');
-        showError('CLIP 模型加载失败，请检查模型文件和 ONNX Runtime。');
-      }
+      if(msg.success){ setClipState('loading'); addLog('clip_app 启动成功，等待就绪...'); }
+      else { setClipState('error'); showError('clip_app 启动失败'); }
       break;
-
-    // ---- clip_app 集成消息 ----
+    // ---- clip_app 实时分类 ----
     case 'clip_result':
-      document.getElementById('ol-top1').textContent = 'Top-1: ' + (msg.top1||'--');
-      document.getElementById('ol-score').textContent = '相似度: ' + ((msg.score||0).toFixed(4));
+      lastTopk = msg.topk || [];
+      renderInference(lastTopk);
+      switchView('inference');
       break;
-
-    case 'clip_labels':
-      updateLabelList(msg.labels||[]);
-      break;
-
+    case 'clip_labels': updateLabelList(msg.labels||[]); break;
+    // ---- clip_app 搜图 ----
     case 'clip_search':
-      addLog(`搜图: ${msg.query} → #${msg.top1_idx} score=${(msg.score||0).toFixed(4)}`);
+      lastSearch = msg;
+      renderSearch(msg);
+      switchView('search');
       break;
-
-    case 'clip_mode':
-      setClipState(msg.mode === 'dual' ? 'dual' : 'search');
-      addLog(`模式: ${msg.mode}`);
+    // ---- clip_app 编码事件 ----
+    case 'clip_enc': /* 状态已由 system_status 反映, 这里可做即时高亮 */ flashEncoder(msg); break;
+    case 'clip_mode': setClipState(msg.mode==='dual'?'dual':'search'); addLog('模式: '+msg.mode); break;
+    case 'clip_ready': setClipState('ready'); addLog('clip_app 就绪，请选择模式'); break;
+    case 'warmup_result':
+      if(msg.success){ addLog('模型预热完成'); }
+      else { addLog('模型预热失败: '+msg.output, 'error'); }
       break;
-
-    case 'clip_ready':
-      setClipState('ready');
-      addLog('clip_app 就绪，请选择模式');
-      break;
-
+    // ---- 算子分析 ----
+    case 'resize_hw_result': document.getElementById('resize-hw-info').textContent = `${msg.data.cycles||0} cycles (${msg.data.us||0} us)`; break;
+    case 'gather_hw_result': document.getElementById('gather-hw-info').textContent = `${msg.data.cycles||0} cycles (${msg.data.us||0} us)`; break;
+    case 'fwht_hw_result':   document.getElementById('fwht-hw-info').textContent   = `${msg.data.cycles||0} cycles (${msg.data.us||0} us)`; break;
+    case 'resize_result': showOpAnalysis('Resize', msg.data); break;
+    case 'gather_result': showOpAnalysis('Gather', msg.data); break;
+    case 'fwht_result':   showOpAnalysis('FWHT', msg.data); break;
     default: break;
   }
 }
 
 // ============================================================
-// 系统状态栏
+// 阈值滑块
 // ============================================================
-const STATUS_MAP = {
-  'Connected':    '已连接',
-  'Disconnected': '未连接',
-  'Running':      '运行中',
-  'Offline':      '离线',
-  'Paused':       '已暂停',
-  'Ready':        '就绪',
-  'Not Ready':    '未就绪',
-  'Enabled':      '已启用',
-  'Disabled':     '未启用',
-  'Idle':         '空闲',
-  'OK':           '正常',
-  '--':           '--',
-};
+function onThrChange(v){
+  THRESHOLD = parseFloat(v);
+  document.getElementById('thr-val').textContent = THRESHOLD.toFixed(3);
+  // 阈值变动 → 重渲染当前结果
+  if(lastTopk.length) renderInference(lastTopk);
+  if(lastSearch) renderSearch(lastSearch);
+}
+function barPct(cos){
+  let p = (cos - BAR_LOW) / (BAR_HIGH - BAR_LOW);
+  return Math.max(0, Math.min(1, p)) * 100;
+}
 
-function t(key){ return STATUS_MAP[key] || key; }
+// ============================================================
+// 实时分类渲染 (阈值判断 + Top-1 hero + Top-K + 图表)
+// ============================================================
+function renderInference(topk){
+  const hero = document.getElementById('result-hero');
+  const heroLabel = document.getElementById('hero-label');
+  const heroSub = document.getElementById('hero-sub');
+  const heroTag = document.getElementById('hero-tag');
 
-function updateStatusBar(data){
-  const items = [
-    {key:'board',        label:'开发板',  val: t(data.board)},
-    {key:'camera',       label:'摄像头',  val: t(data.camera)},
-    {key:'socket',       label:'通信',    val: t(data.socket)},
-    {key:'text_encoder', label:'文本编码', val: t(data.text_encoder)},
-    {key:'image_encoder',label:'图像编码', val: t(data.image_encoder)},
-    {key:'custom_op',    label:'硬算子',   val: t(data.custom_op)},
-    {key:'mode',         label:'模式',    val: data.mode||'--'},
-  ];
-
-  function iconFor(val){
-    if(val==='已连接'||val==='运行中'||val==='就绪'||val==='已启用'||val==='正常') return 'on';
-    if(val==='未连接'||val==='离线'||val==='未就绪'||val==='未启用') return 'off';
-    if(val==='已暂停'||val==='空闲') return 'warn';
-    return 'on';
+  // 推理帧率
+  const now = performance.now();
+  inferFrameTs.push(now);
+  inferFrameTs = inferFrameTs.filter(t => now - t < 3000);
+  if(inferFrameTs.length >= 2){
+    const fps = (inferFrameTs.length - 1) / ((inferFrameTs[inferFrameTs.length-1] - inferFrameTs[0]) / 1000);
+    document.getElementById('enc-image-fps').innerHTML = fps.toFixed(1) + ' <small>fps</small>';
   }
 
-  const bar = document.getElementById('status-bar');
-  bar.innerHTML = items.map(i => `
-    <div class="status-item">
-      <span class="dot ${iconFor(i.val)}"></span>
-      <span>${i.label}: ${i.val}</span>
-    </div>
+  if(!topk || !topk.length){ return; }
+  const top1 = topk[0];
+  const matched = top1.score >= THRESHOLD;
+
+  if(matched){
+    hero.className = 'matched';
+    heroLabel.className = 'matched';
+    heroLabel.textContent = top1.label.toUpperCase();
+    heroSub.textContent = 'cos = ' + top1.score.toFixed(4);
+    heroTag.className = 'matched'; heroTag.style.display = 'inline-block';
+    heroTag.textContent = '✓ 匹配';
+  } else {
+    hero.className = 'nomatch';
+    heroLabel.className = 'nomatch';
+    heroLabel.textContent = '未检测到匹配目标';
+    heroSub.textContent = '最高 cos = ' + top1.score.toFixed(4) + ' (< ' + THRESHOLD.toFixed(2) + ')';
+    heroTag.className = 'nomatch'; heroTag.style.display = 'inline-block';
+    heroTag.textContent = '✗ 无匹配';
+  }
+
+  // Top-K 列表
+  const list = document.getElementById('topk-list');
+  const show = topk.slice(0, 6);
+  list.innerHTML = show.map((it, i) => {
+    const pass = it.score >= THRESHOLD;
+    return `<li class="${pass?'':'dim'}">
+      <span class="rank">#${i+1}</span>
+      <span class="tk-label">${it.label}</span>
+      <div class="bar-wrap"><div class="bar-fill" style="width:${barPct(it.score)}%"></div></div>
+      <span class="tk-score">${it.score.toFixed(4)}</span>
+    </li>`;
+  }).join('');
+
+  // 图像编码器/流水线设为运行
+  markPipeline(true);
+  updateChart(show);
+}
+
+// ============================================================
+// 搜图渲染 (显示所有 cos >= 阈值 的图)
+// ============================================================
+function renderSearch(msg){
+  const grid = document.getElementById('search-grid');
+  const info = document.getElementById('search-info');
+  const empty = document.getElementById('search-empty');
+  const results = (msg.results || []).filter(r => r.score >= THRESHOLD);
+  const total = (msg.results || []).length;
+
+  info.textContent = `查询 "${msg.query}" — ${total} 张库图，${results.length} 张匹配 (阈值 ${THRESHOLD.toFixed(2)})`;
+
+  if(!results.length){
+    grid.innerHTML = '';
+    empty.style.display = 'block';
+    empty.textContent = total > 0
+      ? `没有图片的相似度 ≥ ${THRESHOLD.toFixed(2)}（库中 ${total} 张，最高 ${total?(msg.results[0].score).toFixed(3):'--'}）`
+      : '库为空，请先建库';
+    return;
+  }
+  empty.style.display = 'none';
+  grid.innerHTML = results.map((r, i) => {
+    const imgHtml = r.base64
+      ? `<img src="${r.base64}" alt="${r.name}">`
+      : `<div style="height:130px;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:11px;">无图<br>${r.name||''}</div>`;
+    return `<div class="sr-item ${i===0?'best':''}">
+      ${imgHtml}
+      <div class="sr-meta"><span class="nm" title="${r.name||''}">${i===0?'🏆 ':''}${r.name||('#'+i)}</span><span class="cos">${r.score.toFixed(3)}</span></div>
+    </div>`;
+  }).join('');
+}
+
+// ============================================================
+// 编码器状态卡片 (由 system_status 的 encoder_detail 驱动)
+// ============================================================
+function updateEncoderCards(data){
+  const d = data.encoder_detail;
+  if(!d) return;
+  // 文本
+  const t = d.text;
+  const tState = document.getElementById('enc-text-state');
+  if(t.busy){ tState.className='enc-state busy'; tState.textContent='编码中'; }
+  else if(t.ready){ tState.className='enc-state run'; tState.textContent='就绪'; }
+  else { tState.className='enc-state idle'; tState.textContent='空闲'; }
+  document.getElementById('enc-text-count').textContent = t.count;
+  document.getElementById('enc-text-gather').innerHTML =
+    (t.gather_us_last?t.gather_us_last.toFixed(1):'--') + ' <small>us / 平均 ' + (t.gather_us_avg?t.gather_us_avg.toFixed(1):'--') + '</small>';
+  document.getElementById('enc-text-cur').textContent = t.busy && t.current ? ('正在编码: '+t.current) : '';
+  // 硬算子: Gather 延迟
+  if(t.gather_us_last){
+    document.getElementById('op-gather-lat').textContent = t.gather_us_last.toFixed(1)+' μs';
+    setOpStatus('op-gather', true);
+  }
+
+  // 图像
+  const im = d.image;
+  const iState = document.getElementById('enc-image-state');
+  if(im.running){ iState.className='enc-state run'; iState.textContent='运行中'; }
+  else { iState.className='enc-state idle'; iState.textContent='空闲'; }
+  document.getElementById('enc-image-count').textContent = im.count;
+  document.getElementById('enc-image-resize').innerHTML =
+    (im.resize_us_last?im.resize_us_last.toFixed(1):'--') + ' <small>us / 平均 ' + (im.resize_us_avg?im.resize_us_avg.toFixed(1):'--') + '</small>';
+  document.getElementById('enc-image-frame').innerHTML =
+    (im.frame_ms_last?im.frame_ms_last.toFixed(1):'--') + ' <small>ms</small>';
+  document.getElementById('enc-image-fwht').innerHTML =
+    (im.fwht_us_last?im.fwht_us_last.toFixed(1):'--') + ' <small>us / 平均 ' + (im.fwht_us_avg?im.fwht_us_avg.toFixed(1):'--') + '</small>';
+  // 硬算子: Resize 延迟 + 流水线时间
+  if(im.resize_us_last){
+    document.getElementById('op-resize-lat').textContent = im.resize_us_last.toFixed(1)+' μs';
+    setOpStatus('op-resize', im.running);
+    document.getElementById('pipe-resize-t').textContent = im.resize_us_last.toFixed(1)+' μs';
+  }
+  if(im.frame_ms_last) document.getElementById('pipe-vis-t').textContent = im.frame_ms_last.toFixed(1)+' ms';
+  // FWHT 硬算子状态
+  if(im.fwht_us_last){
+    document.getElementById('op-fwht-lat').textContent = im.fwht_us_last.toFixed(1)+' μs';
+    setOpStatus('op-fwht', im.running);
+  }
+}
+function flashEncoder(msg){
+  // 即时事件到达时的轻高亮 (状态值仍以 system_status 为准)
+  if(msg.encoder === 'text' && msg.phase === 'start'){
+    const s = document.getElementById('enc-text-state');
+    s.className='enc-state busy'; s.textContent='编码中';
+    document.getElementById('enc-text-cur').textContent = '正在编码: ' + (msg.prompt||'');
+  }
+}
+function setOpStatus(id, on){
+  const card = document.getElementById(id);
+  const st = document.getElementById(id+'-status');
+  if(on){ card.classList.add('active'); st.classList.add('on'); st.textContent='运行中'; }
+}
+function markPipeline(on){
+  ['cam','resize','vis','feat','sim','topk'].forEach(s=>{
+    const el = document.querySelector(`.pipe-stage[data-stage="${s}"]`);
+    if(el){ if(on) el.classList.add('done'); }
+  });
+}
+
+// ============================================================
+// 状态栏
+// ============================================================
+const STATUS_MAP = {
+  'Connected':'已连接','Disconnected':'未连接','Running':'运行中','Offline':'离线',
+  'Paused':'已暂停','Idle':'空闲','Ready':'就绪','Not Ready':'未就绪',
+  'Enabled':'已启用','Disabled':'未启用',
+};
+function t(v){ return STATUS_MAP[v] || v; }
+function updateStatusBar(data){
+  const items = [
+    {label:'clip_app', val:t(data.socket)},
+    {label:'文本编码', val:t(data.text_encoder)},
+    {label:'图像编码', val:t(data.image_encoder)},
+    {label:'硬算子',   val:t(data.custom_op)},
+  ];
+  function iconFor(v){
+    if(['已连接','运行中','就绪','已启用'].includes(v)) return 'on';
+    if(['未连接','离线','未就绪','未启用'].includes(v)) return 'off';
+    if(['已暂停','空闲'].includes(v)) return 'warn';
+    return 'warn';
+  }
+  document.getElementById('status-bar').innerHTML = items.map(i=>`
+    <div class="status-item"><span class="dot ${iconFor(i.val)}"></span><span>${i.label}: ${i.val}</span></div>
   `).join('');
 }
 
 // ============================================================
-// Top-K 结果更新
+// 相似度图表
 // ============================================================
-let chartInstance = null;
-
-function updateResults(data){
-  // Top-1 显示
-  document.getElementById('top1-big').textContent = data.top1_label || '--';
-  document.getElementById('top1-score').textContent = '相似度: ' + (data.top1_score || 0).toFixed(4);
-  document.getElementById('ol-top1').textContent = 'Top-1: ' + (data.top1_label || '--');
-  document.getElementById('ol-score').textContent = '相似度: ' + (data.top1_score || 0).toFixed(4);
-
-  // Top-K 列表
-  const list = document.getElementById('topk-list');
-  const items = list.querySelectorAll('li');
-  const topk = data.top_k || [];
-  for(let i=0;i<5;i++){
-    const item = topk[i];
-    const li = items[i];
-    const maxScore = topk.length > 0 ? topk[0].score : 1;
-    if(item){
-      li.querySelector('.label').textContent = item.label;
-      li.querySelector('.score').textContent = item.score.toFixed(4);
-      const pct = maxScore > 0 ? (item.score / maxScore * 100) : 0;
-      li.querySelector('.bar-fill, .bar-fill-d, .bar-fill-e').style.width = pct + '%';
-    }else{
-      li.querySelector('.label').textContent = '--';
-      li.querySelector('.score').textContent = '--';
-      li.querySelector('.bar-fill, .bar-fill-d, .bar-fill-e').style.width = '0%';
-    }
-  }
-
-  // 柱状图
-  updateChart(topk);
-}
-
 function updateChart(topk){
   const ctx = document.getElementById('similarity-chart');
-  const labels = topk.map(t=>t.label).reverse();
-  const scores = topk.map(t=>t.score).reverse();
-  const colors = scores.map((_,i)=>{
-    const idx = scores.length-1-i;
-    return idx===0?'rgba(46,204,113,.85)':
-           idx===1?'rgba(52,152,219,.7)':
-           idx===2?'rgba(0,210,211,.55)':
-           'rgba(136,153,181,.3)';
-  });
-
-  if(chartInstance) chartInstance.destroy();
+  if(!ctx) return;
+  const labels = topk.map(t=>t.label);
+  const data = topk.map(t=>t.score);
+  const colors = topk.map(t=> t.score>=THRESHOLD ? '#2ecc71' : '#556278');
+  if(chartInstance){
+    chartInstance.data.labels = labels;
+    chartInstance.data.datasets[0].data = data;
+    chartInstance.data.datasets[0].backgroundColor = colors;
+    chartInstance.update('none');
+    return;
+  }
   chartInstance = new Chart(ctx, {
     type:'bar',
-    data:{
-      labels:labels,
-      datasets:[{
-        data:scores,
-        backgroundColor:colors,
-        borderColor:colors.map(c=>c.replace(/[\d.]+\)$/,'1)')),
-        borderWidth:1,
-        borderRadius:3,
-      }]
-    },
+    data:{ labels, datasets:[{ data, backgroundColor:colors, borderRadius:4 }] },
     options:{
-      indexAxis:'y',
-      responsive:true,
-      maintainAspectRatio:false,
-      plugins:{
-        legend:{display:false},
-        tooltip:{callbacks:{label:ctx=>'相似度: '+ctx.raw.toFixed(4)}}
-      },
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false},
+        annotation:false,
+        tooltip:{callbacks:{label:(c)=>'cos: '+c.parsed.y.toFixed(4)}} },
       scales:{
-        x:{grid:{color:'rgba(255,255,255,.04)'},ticks:{color:'#556278',font:{size:9}}},
-        y:{grid:{display:false},ticks:{color:'#c8d6e5',font:{size:10,family:"'Segoe UI','PingFang SC',sans-serif"}}}
+        y:{ beginAtZero:true, suggestedMax:Math.max(0.4, Math.max(...data,0)+0.05),
+            grid:{color:'#1e2a3a'}, ticks:{color:'#8a9bb5',font:{size:10}} },
+        x:{ grid:{display:false}, ticks:{color:'#8a9bb5',font:{size:10}} }
       }
     }
   });
 }
 
 // ============================================================
-// 推理流水线
+// 算子分析视图
 // ============================================================
-function updatePipeline(stages){
-  const pipe = document.getElementById('pipeline');
-  const stageEls = pipe.querySelectorAll('.pipe-stage');
-
-  stages.forEach((stage) => {
-    for(const el of stageEls){
-      const nameText = el.querySelector('.pipe-name').textContent.trim();
-      // 匹配中文名或保留的英文名
-      if(nameText.startsWith(stage.name.split(' ')[0]) ||
-         nameText.includes(stage.name) ||
-         nameText.includes('CLIP') && stage.name.includes('CLIP') ||
-         nameText.includes('FWHT') && stage.name.includes('FWHT') ||
-         nameText.includes('图像特征') && stage.name.includes('Image Feature') ||
-         nameText.includes('相似度') && stage.name.includes('Similarity') ||
-         nameText.includes('摄像头') && stage.name.includes('Camera') ||
-         nameText.includes('Top-K') && stage.name.includes('Top-K')){
-        const status = stage.status.toLowerCase();
-        el.className = 'pipe-stage ' + status;
-        el.querySelector('.pipe-indicator').className = 'pipe-indicator ' + status;
-        if(stage.time) el.querySelector('.pipe-time').textContent = stage.time;
-        break;
-      }
-    }
-  });
-}
-
-// ============================================================
-// 硬算子卡片
-// ============================================================
-const STATUS_ZH = { 'Waiting': '等待中', 'Running': '运行中', 'Done': '已完成', 'Error': '异常', 'Cached': '已缓存' };
-
 function showOpAnalysis(opType, data){
+  switchView('operator');
   const title = document.getElementById('op-result-title');
   const body  = document.getElementById('op-result-body');
   let html = '';
@@ -972,10 +736,8 @@ function showOpAnalysis(opType, data){
     html += `<div style="text-align:center;padding:6px 0;font-size:12px;color:var(--text-secondary);border-top:1px solid var(--border);margin-top:6px;">`;
     html += `Input: <b style="color:var(--accent)"> ${data.total_rows||'--'}</b> rows  |  Output: <b style="color:var(--accent)">${data.output_rows||'--'}</b> rows`;
     html += '</div>';
-
   } else if (opType === 'Resize'){
     title.textContent = 'Resize/Crop 结果 (640x480 → 224x224)';
-    // Left: Input | Right: Golden + HW stacked (heights sum ≈ input short side)
     html = '<div style="display:flex;gap:12px;align-items:flex-start;">';
     if (data.input_b64)
       html += `<div style="flex:4;text-align:center"><div style="font-size:11px;margin-bottom:4px;color:var(--text-secondary)">Input (640x480)</div><img src="${data.input_b64}" style="width:100%;max-height:41vh;object-fit:contain;border-radius:4px;border:1px solid var(--border)"></div>`;
@@ -986,350 +748,116 @@ function showOpAnalysis(opType, data){
       html += `<div style="text-align:center;flex:1"><div style="font-size:11px;margin-bottom:2px;color:var(--text-secondary)">Hardware (224x224)</div><img src="${data.hw_b64}" style="width:100%;max-height:20vh;object-fit:contain;border-radius:4px;border:1px solid var(--border)"></div>`;
     html += '</div>';
     html += '</div>';
-    // Metrics row below images
     html += `<div style="width:100%;text-align:center;padding:8px 0;font-size:12px;color:var(--text-secondary);border-top:1px solid var(--border);margin-top:4px;">`;
     html += `Cosine: <b style="color:var(--accent)">${data.cosine||'--'}</b>  |  PSNR: <b style="color:var(--accent)">${data.psnr||'--'} dB</b>`;
     html += '</div>';
   }
 
   body.innerHTML = html || '分析完成';
-  body.style.display = 'block';
-}
-
-function updateHardOps(ops){
-  for(const [key, op] of Object.entries(ops)){
-    updateSingleHardOp(key, op);
-  }
-}
-
-function updateSingleHardOp(key, op){
-  const prefix = 'op-' + key.replace(/_/g, '-');
-  const latEl = document.getElementById(prefix + '-lat');
-  const statusEl = document.getElementById(prefix + '-status');
-
-  if(latEl && op.latency_ms !== undefined){
-    const ms = op.latency_ms;
-    latEl.textContent = ms < 1 ? (ms*1000).toFixed(0)+' μs' : ms.toFixed(2)+' ms';
-  }
-  if(statusEl){
-    const zh = STATUS_ZH[op.status] || op.status || '等待中';
-    statusEl.textContent = zh;
-    statusEl.className = 'op-status ' + (op.status||'waiting').toLowerCase();
-  }
 }
 
 // ============================================================
-// 性能指标表
+// tab 视图切换
 // ============================================================
-function updatePerfTable(timing){
-  document.getElementById('perf-resize').textContent = timing.resize_crop_ms != null ? timing.resize_crop_ms.toFixed(2)+' ms' : '--';
-  document.getElementById('perf-gather').textContent = timing.gather_ms != null ? (timing.gather_ms < 0.1 ? (timing.gather_ms*1000).toFixed(0)+' μs' : timing.gather_ms.toFixed(2)+' ms') : '--';
-  document.getElementById('perf-fwht').textContent = timing.fwht_ms != null ? (timing.fwht_ms < 0.1 ? (timing.fwht_ms*1000).toFixed(0)+' μs' : timing.fwht_ms.toFixed(2)+' ms') : '--';
-  document.getElementById('perf-img-enc').textContent = timing.image_encode_ms != null ? timing.image_encode_ms.toFixed(1)+' ms' : '--';
-  document.getElementById('perf-sim').textContent = timing.similarity_ms != null ? timing.similarity_ms.toFixed(2)+' ms' : '--';
-  document.getElementById('perf-total').textContent = timing.total_ms != null ? timing.total_ms.toFixed(1)+' ms' : '--';
-  if(timing.total_ms > 0){
-    document.getElementById('perf-rate').textContent = (1000/timing.total_ms).toFixed(1)+' fps';
-  }
+function switchView(view){
+  document.querySelectorAll('.mode-tab').forEach(t=> t.classList.toggle('active', t.dataset.view===view));
+  document.querySelectorAll('.center-view').forEach(v=> v.classList.remove('active'));
+  const el = document.getElementById('view-'+view);
+  if(el) el.classList.add('active');
 }
 
 // ============================================================
-// 运行日志
+// 标签 / 搜图 操作
 // ============================================================
-const MAX_LOG = 200;
-let logEntries = [];
-
-function addLog(msg, level){
-  const now = new Date();
-  const ts = now.toTimeString().slice(0,8);
-  addLogEntry(ts, msg, level);
-}
-
-function addLogEntry(ts, msg, level){
-  logEntries.push({ts, msg, level:level||''});
-  if(logEntries.length > MAX_LOG) logEntries.shift();
-  renderLog();
-}
-
-function renderLog(){
-  const win = document.getElementById('log-window');
-  win.innerHTML = logEntries.map(e =>
-    `<div class="log-entry"><span class="log-time">${e.ts}</span><span class="log-msg ${e.level}">${e.msg}</span></div>`
-  ).join('');
-  win.scrollTop = win.scrollHeight;
-}
-
-function clearLogs(){
-  logEntries = [];
-  renderLog();
-}
-
-// ============================================================
-// 异常提示
-// ============================================================
-function showError(msg){
-  const banner = document.getElementById('error-banner');
-  document.getElementById('error-text').textContent = '⚠ ' + msg;
-  banner.style.display = 'flex';
-}
-
-function dismissError(){
-  document.getElementById('error-banner').style.display = 'none';
-}
-
-// ============================================================
-// UI 操作
-// ============================================================
-
-function switchRightView(view){
-  // 右侧选项卡
-  document.querySelectorAll('#right-col .mode-tab').forEach(t=>t.classList.remove('active'));
-  const tab = document.querySelector(`#right-col .mode-tab[data-view="${view}"]`);
-  if(tab) tab.classList.add('active');
-
-  // 右侧面板切换
-  document.getElementById('view-inference').style.display = view==='inference' ? 'flex' : 'none';
-  document.getElementById('view-search').style.display = view==='search' ? 'flex' : 'none';
-  document.getElementById('view-operator').style.display = view==='operator' ? 'flex' : 'none';
-
-  // 中央面板：搜图/算子 覆盖摄像头画面
-  const isOverlay = (view === 'search' || view === 'operator');
-  document.getElementById('search-view').style.display = view==='search' ? 'flex' : 'none';
-  document.getElementById('operator-view').style.display = view==='operator' ? 'block' : 'none';
-  document.getElementById('camera-overlay').style.display = isOverlay ? 'none' : 'block';
-
-  const titles = {inference:'实时摄像头画面', search:'文本搜图', operator:'算子测试'};
-  document.getElementById('center-panel-title').textContent = titles[view] || '实时摄像头画面';
-  document.getElementById('frame-info').textContent = view==='inference' ? '--' : '';
-}
-
-function startCamera(){
-  const sel = document.getElementById('camera-select');
-  const camId = parseInt(sel.value);
-  addLog('正在启动摄像头（索引 ' + camId + '）...');
-  sendMsg({type:'start_camera', camera_id: camId});
-}
-
-// ============================================================
-// 文本搜图（T2I Retrieval）
-// ============================================================
-
-function listImages(){
-  const folder = document.getElementById('search-folder').value.trim();
-  if(!folder){
-    addLog('请输入图片文件夹路径。', 'warning');
-    return;
-  }
-  sendMsg({type:'list_images', folder: folder});
-  document.getElementById('folder-info').textContent = '正在读取...';
-}
-
-function handleImageList(msg){
-  const info = document.getElementById('folder-info');
-  if(msg.error){
-    info.innerHTML = '<span style="color:var(--accent-red);">⚠ ' + msg.error + '</span>';
-    addLog('图片列表错误：' + msg.error, 'error');
-    return;
-  }
-  info.textContent = '文件夹：' + msg.folder + ' （共 ' + msg.count + ' 张图片）';
-  addLog('已读取图片列表，共 ' + msg.count + ' 张。');
-}
-
-function doSearchImages(){
-  const folder = document.getElementById('search-folder').value.trim();
-  const query = document.getElementById('search-query').value.trim();
-  const topK = parseInt(document.getElementById('search-topk').value);
-
-  if(!folder){ addLog('请先选择图片文件夹。', 'warning'); return; }
-  if(!query){ addLog('请输入查询文本。', 'warning'); return; }
-
-  // 自动切换到搜图视图，中央面板显示搜图结果
-  switchRightView('search');
-
-  // 中央面板显示加载状态
-  document.getElementById('search-view-empty').style.display = 'none';
-  document.getElementById('search-view-grid').innerHTML =
-    '<div style="grid-column:1/-1;text-align:center;color:var(--accent-blue);font-size:13px;padding:32px;">正在搜索...</div>';
-  document.getElementById('search-view-info').textContent = '查询："' + query + '" ← ' + folder;
-
-  addLog('文本搜图："' + query + '" ← ' + folder);
-  sendMsg({type:'search_images', query: query, folder: folder, top_k: topK});
-}
-
-function handleSearchResult(msg){
-  const grid = document.getElementById('search-view-grid');
-  const info = document.getElementById('search-view-info');
-  const empty = document.getElementById('search-view-empty');
-
-  if(msg.error){
-    grid.innerHTML = '';
-    empty.style.display = 'flex';
-    empty.innerHTML = '⚠ ' + msg.error;
-    empty.style.color = 'var(--accent-red)';
-    addLog('搜图错误：' + msg.error, 'error');
-    return;
-  }
-  if(!msg.results || msg.results.length === 0){
-    grid.innerHTML = '';
-    empty.style.display = 'flex';
-    empty.textContent = '未找到匹配图片';
-    empty.style.color = 'var(--text-dim)';
-    return;
-  }
-
-  empty.style.display = 'none';
-  info.innerHTML = '查询：<b>' + msg.query + '</b> &nbsp;|&nbsp; 共检索 ' + msg.total_images
-    + ' 张，有效 ' + msg.valid_results + ' 张 &nbsp;|&nbsp; 耗时 ' + msg.total_time_ms.toFixed(0)
-    + 'ms &nbsp;|&nbsp; <span style="font-size:9px;color:var(--text-dim);">得分 = softmax(余弦/0.07)</span>';
-
-  // 取所有结果的 softmax score 最大值做进度条参照
-  const maxScore = msg.results[0].score;
-  let html = '';
-  msg.results.forEach((r, i) => {
-    const pct = maxScore > 0 ? (r.score/maxScore*100).toFixed(0) : 0;
-    const barColor = i===0?'var(--accent)':i===1?'var(--accent-blue)':i===2?'var(--accent-cyan)':'var(--text-dim)';
-    html += '<div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;cursor:pointer;background:var(--bg-input);transition:border-color .2s;" '
-      + 'onmouseenter="this.style.borderColor=\'var(--accent)\'" onmouseleave="this.style.borderColor=\'var(--border)\'" '
-      + 'onclick="window.open(\'file:///' + r.path.replace(/\\/g,'/') + '\')" title="' + r.path + '">'
-      + '<img src="' + (r.base64||'') + '" style="width:100%;aspect-ratio:1;object-fit:cover;display:block;">'
-      + '<div style="padding:4px 8px;">'
-      + '<div style="font-size:10px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + r.name + '</div>'
-      + '<div style="display:flex;align-items:center;gap:5px;margin-top:3px;">'
-      + '<div style="flex:1;height:4px;background:rgba(255,255,255,.06);border-radius:2px;">'
-      + '<div style="height:100%;width:' + pct + '%;background:' + barColor + ';border-radius:2px;"></div></div>'
-      + '<span style="font-size:10px;color:' + barColor + ';font-weight:700;white-space:nowrap;">' + (r.score*100).toFixed(1) + '%</span>'
-      + '</div>'
-      + '<div style="font-size:8px;color:var(--text-dim);margin-top:1px;">余弦: ' + (r.cosine||0).toFixed(4) + '</div>'
-      + '</div></div>';
-  });
-  grid.innerHTML = html;
-  addLog('搜图完成：Top-1 = ' + msg.results[0].name + '（概率 ' + (msg.results[0].score*100).toFixed(1) + '%），共匹配 ' + msg.valid_results + ' 张。');
-}
-
-function switchMode(mode){
-  document.querySelectorAll('.mode-tab').forEach(t=>t.classList.remove('active'));
-  const tab = document.querySelector(`.mode-tab[data-mode="${mode}"]`);
-  if(tab) tab.classList.add('active');
-  sendMsg({type:'switch_mode',mode:mode});
-
-  if(mode === 'replay'){
-    addLog('已切换到回放演示模式（兜底方案）。', 'warning');
-  }
-}
-
-function updateTextFeatures(){
-  addLog('请通过分类模式面板中的"添加标签"逐个添加，或使用 labels_txt 配置文件。');
-}
-
-function loadDefaultLabels(){
-  const defaults = ['drone','airplane','bird','helicopter','balloon',
-    'person','car','dog','cat','bicycle'];
-  defaults.forEach(l => sendMsg({type:'clip_cmd', cmd:'add '+l}));
-  addLog('已发送默认标签到 clip_app');
-}
-
-document.addEventListener('keydown',(e)=>{
-  if(e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
-  switch(e.key.toLowerCase()){
-    case 's': sendMsg({type:'start_inference'}); addLog('快捷键：开始推理'); break;
-    case 'p': sendMsg({type:'pause_inference'}); addLog('快捷键：暂停推理'); break;
-    case 'f': sendMsg({type:'single_inference'}); addLog('快捷键：单帧推理'); break;
-    case 'u': updateTextFeatures(); break;
-    case '1': switchMode('pc'); break;
-    case '2': switchMode('board'); break;
-    case '3': switchMode('replay'); break;
-  }
-});
-
-// ============================================================
-// 初始化
-// ============================================================
-function init(){
-  addLog('系统初始化中...');
-  connectWS();
-}
 function updateLabelList(labels){
   const el = document.getElementById('label-list');
   if(!el) return;
-  el.innerHTML = labels.map((l,i)=>`<span style="display:inline-block;margin:1px 3px;padding:1px 6px;background:var(--bg-card);border-radius:3px;cursor:pointer;" onclick="sendMsg({type:'clip_cmd',cmd:'del #'+${i}})" title="点击删除">${l} ✕</span>`).join('');
+  el.innerHTML = labels.map((l,i)=>`<span onclick="sendMsg({type:'clip_cmd',cmd:'del #'+${i}})" title="点击删除">${l} ✕</span>`).join('');
 }
 function addLabel(){
   const inp = document.getElementById('add-label-input');
-  if(!inp) return;
   const text = inp.value.trim();
   if(!text) return;
   sendMsg({type:'clip_cmd', cmd:'add '+text});
-  inp.value = '';
-  addLog('添加: '+text);
+  inp.value=''; addLog('添加标签: '+text);
+}
+function capSnap(){ sendMsg({type:'clip_cmd', cmd:'snap'}); addLog('拍摄一张'); }
+function sendVid(){
+  const inp = document.getElementById('vid-cmd-input');
+  const c = inp.value.trim();
+  if(!c) return;
+  sendMsg({type:'clip_cmd', cmd:c});
+  addLog('建库: '+c);
 }
 function searchQuery(){
   const inp = document.getElementById('search-query-input');
-  if(!inp) return;
   const q = inp.value.trim();
   if(!q) return;
-  sendMsg({type:'clip_cmd', cmd:q});
+  sendMsg({type:'search_images', query:q});   // server 会转 mode search + 查询
   addLog('搜图: '+q);
 }
 
-	// clip_app 状态管理：控制按钮启用/禁用
-	// 状态机: off → loading → ready → dual/search
-	function setClipState(state){
-	  const el = document.getElementById('clip-status');
-	  const hint = document.getElementById('mode-hint');
-	  const btnDual = document.getElementById('btn-mode-dual');
-	  const btnSearch = document.getElementById('btn-mode-search');
-	  const dualSec = document.getElementById('dual-section');
-	  const searchSec = document.getElementById('search-section');
+// ============================================================
+// clip_app 状态机
+// ============================================================
+function updateWarmupStatus(state){
+  const hint = document.getElementById('warmup-hint');
+  const btn = document.getElementById('btn-warmup');
+  if(!state) return;
+  if(state === 'Running'){ hint.innerHTML='模型预热: <span style="color:var(--accent-yellow);">🟡 运行中...</span>'; btn.disabled=true; }
+  else if(state === 'Done'){ hint.innerHTML='模型预热: <span style="color:var(--accent);">🟢 已完成</span>'; btn.disabled=true; }
+  else { hint.innerHTML='模型预热: <span style="color:var(--text-dim);">⚫ 未执行</span>'; btn.disabled=false; }
+}
+function setClipState(state){
+  const el = document.getElementById('clip-status');
+  const hint = document.getElementById('mode-hint');
+  const btnDual = document.getElementById('btn-mode-dual');
+  const btnSearch = document.getElementById('btn-mode-search');
+  const dualSec = document.getElementById('dual-section');
+  const searchSec = document.getElementById('search-section');
+  const disableAll = ()=>{
+    btnDual.disabled=true; btnSearch.disabled=true;
+    dualSec.style.display='none'; searchSec.style.display='none';
+    document.querySelectorAll('.dual-btn,.dual-input,.search-btn,.search-input').forEach(x=>x.disabled=true);
+  };
+  if(state==='loading'){ el.innerHTML='<span style="color:var(--accent-yellow);">🟡 加载中...</span>'; hint.textContent='clip_app 启动中...'; disableAll(); }
+  else if(state==='ready'){ el.innerHTML='<span style="color:var(--accent);">🟢 就绪 — 请选择模式</span>'; hint.textContent='选择运行模式'; disableAll(); btnDual.disabled=false; btnSearch.disabled=false; }
+  else if(state==='dual'){ el.innerHTML='<span style="color:var(--accent);">🟢 实时分类</span>'; hint.textContent='实时分类 — SDI 摄像头推理'; disableAll(); btnDual.disabled=false; btnSearch.disabled=false; dualSec.style.display='block'; document.querySelectorAll('.dual-btn,.dual-input').forEach(x=>x.disabled=false); switchView('inference'); }
+  else if(state==='search'){ el.innerHTML='<span style="color:var(--accent-orange);">🟠 文本搜图</span>'; hint.textContent='搜图 — 以文找图'; disableAll(); btnDual.disabled=false; btnSearch.disabled=false; searchSec.style.display='block'; document.querySelectorAll('.search-btn,.search-input').forEach(x=>x.disabled=false); switchView('search'); }
+  else if(state==='error'){ el.innerHTML='<span style="color:var(--accent-red);">🔴 错误</span>'; hint.textContent='启动失败'; disableAll(); }
+  else { el.innerHTML='<span style="color:var(--text-dim);">⚫ 未启动</span>'; hint.textContent='等待 clip_app 就绪...'; disableAll(); }
+}
 
-	  // 先隐藏所有模式区域，禁用所有模式按钮
-	  const disableAll = () => {
-	    btnDual.disabled = true; btnSearch.disabled = true;
-	    btnDual.style.opacity = ''; btnSearch.style.opacity = '';
-	    dualSec.style.display = 'none';
-	    searchSec.style.display = 'none';
-	    document.querySelectorAll('.dual-btn').forEach(b => b.disabled = true);
-	    document.querySelectorAll('.dual-input').forEach(i => i.disabled = true);
-	    document.querySelectorAll('.search-btn').forEach(b => b.disabled = true);
-	    document.querySelectorAll('.search-input').forEach(i => i.disabled = true);
-	  };
+// ============================================================
+// 日志
+// ============================================================
+const logs = [];
+function addLog(msg, level){ addLogEntry(new Date().toLocaleTimeString('zh-CN',{hour12:false}), msg, level||''); }
+function addLogEntry(ts, msg, level){
+  logs.push({ts,msg,level});
+  if(logs.length>200) logs.shift();
+  renderLog();
+}
+function renderLog(){
+  const win = document.getElementById('log-window');
+  win.innerHTML = logs.map(l=>`<div class="log-entry ${l.level}"><span class="ts">${l.ts}</span><span class="msg">${escapeHtml(l.msg)}</span></div>`).join('');
+  win.scrollTop = win.scrollHeight;
+}
+function escapeHtml(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function showError(msg){
+  const b = document.getElementById('error-banner');
+  b.textContent = '⚠ ' + msg; b.style.display='block';
+  setTimeout(()=>{ b.style.display='none'; }, 6000);
+}
 
-	  if (state === 'loading') {
-	    el.innerHTML = '<span style="color:var(--accent-yellow);">🟡 加载中...</span>';
-	    hint.textContent = '模型加载中，请稍候...';
-	    disableAll();
-	  } else if (state === 'ready') {
-	    el.innerHTML = '<span style="color:var(--accent);">🟢 就绪 — 请选择模式</span>';
-	    hint.textContent = '选择运行模式：';
-	    disableAll();
-	    btnDual.disabled = false; btnSearch.disabled = false;
-	  } else if (state === 'dual') {
-	    el.innerHTML = '<span style="color:var(--accent);">🟢 分类模式</span>';
-	    hint.textContent = '分类模式 — 实时摄像头推理';
-	    disableAll();
-	    btnDual.disabled = false; btnSearch.disabled = false;
-	    btnDual.style.opacity = '1'; btnSearch.style.opacity = '0.5';
-	    dualSec.style.display = 'block';
-	    document.querySelectorAll('.dual-btn').forEach(b => b.disabled = false);
-	    document.querySelectorAll('.dual-input').forEach(i => i.disabled = false);
-	  } else if (state === 'search') {
-	    el.innerHTML = '<span style="color:var(--accent-orange);">🟠 搜图模式</span>';
-	    hint.textContent = '搜图模式 — 以文找图';
-	    disableAll();
-	    btnDual.disabled = false; btnSearch.disabled = false;
-	    btnDual.style.opacity = '0.5'; btnSearch.style.opacity = '1';
-	    searchSec.style.display = 'block';
-	    document.querySelectorAll('.search-btn').forEach(b => b.disabled = false);
-	    document.querySelectorAll('.search-input').forEach(i => i.disabled = false);
-	  } else if (state === 'error') {
-	    el.innerHTML = '<span style="color:var(--accent-red);">🔴 错误</span>';
-	    hint.textContent = '启动失败，请重试';
-	    disableAll();
-	  } else {  // 'off'
-	    el.innerHTML = '<span style="color:var(--text-dim);">⚫ 未启动</span>';
-	    hint.textContent = '等待 clip_app 就绪...';
-	    disableAll();
-	  }
-	}
+// ============================================================
+// 快捷键 & 初始化
+// ============================================================
+document.addEventListener('keydown',(e)=>{
+  if(e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT') return;
+  if(e.key.toLowerCase()==='s') sendMsg({type:'start_inference'});
+});
+function init(){ addLog('系统初始化...'); connectWS(); }
 init();
 </script>
 </body>

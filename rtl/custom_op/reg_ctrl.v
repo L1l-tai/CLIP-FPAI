@@ -52,13 +52,6 @@ module reg_ctrl(
     output reg    [   15 : 0]   wheight_rs       ,
     input                       comp_done_rs     ,
 
-    output reg                  comp_start_fc    ,
-    output reg                  direction_fc     ,
-    output reg  [31:0]          rbase_fc         ,
-    output reg  [31:0]          wbase_fc         ,
-    output reg  [31:0]          pixel_cnt_fc     ,
-    input                       comp_done_fc     ,
-
     input         [   31 : 0]   rfu_rreg0        ,                                              
     input         [   31 : 0]   rfu_rreg1        ,                                              
     input         [   31 : 0]   rfu_rreg2        ,                                              
@@ -135,14 +128,6 @@ module reg_ctrl(
     localparam RS_COMP_DONE_ADDR    = 16'h50;
 
     localparam RS_VERSION          = 32'h20260611;
-
-    localparam FC_COMP_START_ADDR  = 16'h51;
-    localparam FC_SRC_ADDR         = 16'h52;
-    localparam FC_DST_ADDR         = 16'h53;
-    localparam FC_PIXEL_CNT        = 16'h54;
-    localparam FC_COMP_DONE_ADDR   = 16'h61;
-    localparam FC_VER_ADDR         = 16'h81;
-    localparam FC_VERSION          = 32'h20260708;
 
 
     wire              ra_awevent      ;
@@ -297,40 +282,6 @@ module reg_ctrl(
        end
     end
 
-    // ---- fmt_cvt registers ----
-    always@(posedge clk or negedge rst_n) begin
-        if(rst_n==1'b0) begin
-            comp_start_fc <= #0.1 0;
-            direction_fc  <= #0.1 0;
-        end else if(comp_start_fc==1'b1) begin
-            comp_start_fc <= #0.1 0;
-        end else if(ra_awevent && ra_awaddr==FC_COMP_START_ADDR) begin
-            comp_start_fc <= #0.1 ra_awdata[0];
-            direction_fc  <= #0.1 ra_awdata[1];
-        end
-    end
-
-    always@(posedge clk or negedge rst_n) begin
-       if(rst_n==1'b0)
-            rbase_fc <= #0.1 0;
-       else if(ra_awevent && ra_awaddr==FC_SRC_ADDR)
-            rbase_fc <= #0.1 ra_awdata;
-    end
-
-    always@(posedge clk or negedge rst_n) begin
-       if(rst_n==1'b0)
-            wbase_fc <= #0.1 0;
-       else if(ra_awevent && ra_awaddr==FC_DST_ADDR)
-            wbase_fc <= #0.1 ra_awdata;
-    end
-
-    always@(posedge clk or negedge rst_n) begin
-       if(rst_n==1'b0)
-            pixel_cnt_fc <= #0.1 0;
-       else if(ra_awevent && ra_awaddr==FC_PIXEL_CNT)
-            pixel_cnt_fc <= #0.1 ra_awdata;
-    end
-
 
     always@(posedge clk or negedge rst_n) begin
         if(rst_n==1'b0)
@@ -438,16 +389,6 @@ module reg_ctrl(
             comp_done_rs_reg <= #0.1 1;
     end
 
-    reg comp_done_fc_reg;
-    always@(posedge clk or negedge rst_n) begin
-        if(rst_n==1'b0)
-            comp_done_fc_reg <= #0.1 0;
-        else if(comp_start_fc==1'b1)
-            comp_done_fc_reg <= #0.1 0;
-        else if(comp_done_fc)
-            comp_done_fc_reg <= #0.1 1;
-    end
-
     always@(posedge clk or negedge rst_n) begin
         if(rst_n==1'b0)
             ra_rdata <= #0.1 0;
@@ -458,7 +399,6 @@ module reg_ctrl(
                 COMPUTE_DONE_ADDR : ra_rdata <= #0.1 {31'd0,comp_done_reg};
                 HD_COMP_DONE_ADDR : ra_rdata <= #0.1 {31'd0,comp_done_hd_reg};
                 RS_COMP_DONE_ADDR : ra_rdata <= #0.1 {31'd0,comp_done_rs_reg};
-                FC_COMP_DONE_ADDR : ra_rdata <= #0.1 {31'd0,comp_done_fc_reg};
                 RFU_RADDR0        : ra_rdata <= #0.1 rfu_rreg0;
                 RFU_RADDR1        : ra_rdata <= #0.1 rfu_rreg1;
                 RFU_RADDR2        : ra_rdata <= #0.1 rfu_rreg2;               
@@ -472,7 +412,6 @@ module reg_ctrl(
                 16'h30            : ra_rdata <= #0.1 GATHER_VERSION;
                 16'h60            : ra_rdata <= #0.1 HD_VERSION;
                 16'h70            : ra_rdata <= #0.1 RS_VERSION;
-                FC_VER_ADDR       : ra_rdata <= #0.1 FC_VERSION;
               
                 default : ra_rdata <= #0.1 32'hFFFFFFFF;
             endcase

@@ -362,7 +362,7 @@ int main(int argc, char* argv[])
         for (int y = 0; y < NET_H; y++) {
             const cv::Vec3b* row = img640.ptr<cv::Vec3b>(y);
             for (int x = 0; x < NET_W; x++)
-                padded[y*NET_W+x] = (uint32_t)row[x][0]<<16 | (uint32_t)row[x][1]<<8 | row[x][2];
+                padded[y*NET_W+x] = (uint32_t)row[x][2]<<16 | (uint32_t)row[x][1]<<8 | row[x][0];
         }
         rs_src.write(0, (char*)padded.data(), NET_W*NET_H*4);
         ResizeConfig rcfg;

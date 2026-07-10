@@ -77,6 +77,23 @@ class SystemState:
         self.current_mode = "pc"             # "board" | "pc" | "replay"
         self.inference_running = False
         self.model_loaded = False
+        self.warmup_done = False             # 模型预热是否完成
+        self.warmup_running = False          # 预热是否正在运行
+        self.current_mode_clip = ""          # clip_app 当前模式 dual/search
+
+        # ---- 编码器细粒度状态 ----
+        self.text_encoder_busy = False       # 正在编码文本
+        self.text_encoder_current = ""       # 当前正在编码的文本
+        self.text_enc_count = 0              # 已编码文本次数
+        self.text_gather_us_last = 0         # 最近一次 Gather 硬算子耗时(us)
+        self.text_gather_us_avg = 0          # 平均 Gather 耗时(us)
+
+        self.image_enc_count = 0             # 已编码图像帧数
+        self.image_resize_us_last = 0        # 最近一次 Resize 硬算子耗时(us)
+        self.image_resize_us_avg = 0         # 平均 Resize 耗时(us)
+        self.image_frame_ms_last = 0         # 最近单帧总耗时(ms)
+        self.fwht_us_last = 0               # 最近一次 FWHT 耗时(us)
+        self.fwht_us_avg = 0                # 平均 FWHT 耗时(us)
 
     def to_dict(self):
         return {
@@ -92,6 +109,27 @@ class SystemState:
                 "replay": "回放演示",
             }.get(self.current_mode, self.current_mode),
             "inference": "Running" if self.inference_running else "Paused",
+            "warmup": "Done" if self.warmup_done else ("Running" if self.warmup_running else "Idle"),
+            # 编码器细粒度
+            "encoder_detail": {
+                "text": {
+                    "ready": self.text_encoder_ready,
+                    "busy": self.text_encoder_busy,
+                    "current": self.text_encoder_current,
+                    "count": self.text_enc_count,
+                    "gather_us_last": round(self.text_gather_us_last, 1),
+                    "gather_us_avg": round(self.text_gather_us_avg, 1),
+                },
+                "image": {
+                    "running": self.image_encoder_running,
+                    "count": self.image_enc_count,
+                    "resize_us_last": round(self.image_resize_us_last, 1),
+                    "resize_us_avg": round(self.image_resize_us_avg, 1),
+                    "frame_ms_last": round(self.image_frame_ms_last, 1),
+                    "fwht_us_last": round(self.fwht_us_last, 1),
+                    "fwht_us_avg": round(self.fwht_us_avg, 1),
+                },
+            },
         }
 
 
@@ -286,19 +324,83 @@ def parse_web_line(line: str) -> Optional[dict]:
     content = line[6:]  # strip "[WEB] " prefix
     content = content.strip()
 
+    # ---- 实时分类 Top-K: RESULT topk=cat:0.82,dog:0.21,... ----
+    # 注意: label 可能带空格(如 "a photo of a cat"), 所以抓 topk= 到行尾, 不能用 \S+
     if content.startswith("RESULT"):
-        m = re.search(r'top1=(\S+)\s+score=([\d.]+)', content)
+        idx = content.find("topk=")
+        if idx >= 0:
+            payload = content[idx + 5:].strip()  # topk= 之后的整段
+            topk = []
+            for item in payload.split(","):
+                item = item.strip()
+                if ":" in item:
+                    lbl, sc = item.rsplit(":", 1)  # 从右边分, label 里的空格不受影响
+                    try:
+                        topk.append({"label": lbl.strip(), "score": float(sc)})
+                    except ValueError:
+                        pass
+            return {"type": "clip_result", "topk": topk}
+        # 兼容旧格式 top1=x score=y
+        m = re.search(r'top1=(.+?)\s+score=([\d.]+)', content)
         if m:
-            return {"type": "clip_result", "top1": m.group(1), "score": float(m.group(2))}
+            return {"type": "clip_result",
+                    "topk": [{"label": m.group(1).strip(), "score": float(m.group(2))}]}
+
+    # ---- 标签列表 ----
     elif content.startswith("LABELS"):
-        labels_str = content[7:].strip()  # after "LABELS "
+        labels_str = content[7:].strip()
         labels = [l.strip() for l in labels_str.split(",") if l.strip()]
         return {"type": "clip_labels", "labels": labels}
+
+    # ---- 搜图结果: SEARCH n=N results=path:cos;path:cos;... query=xxx ----
     elif content.startswith("SEARCH"):
-        m = re.search(r'query=(\S+)\s+top1_idx=(\d+)\s+score=([\d.]+)', content)
-        if m:
-            return {"type": "clip_search", "query": m.group(1),
-                    "top1_idx": int(m.group(2)), "score": float(m.group(3))}
+        # query= 在最后(可能含空格); results= 在 query= 之前
+        q_idx = content.find("query=")
+        query = content[q_idx + 6:].strip() if q_idx >= 0 else ""
+        r_idx = content.find("results=")
+        results = []
+        if r_idx >= 0:
+            # results= 之后, 到 query= 之前(若有)
+            r_end = q_idx if q_idx > r_idx else len(content)
+            payload = content[r_idx + 8:r_end].strip()
+            for item in payload.split(";"):
+                item = item.strip()
+                if ":" in item:
+                    path, sc = item.rsplit(":", 1)
+                    try:
+                        results.append({"path": path.strip(), "score": float(sc)})
+                    except ValueError:
+                        pass
+        return {"type": "clip_search", "query": query, "results": results}
+
+    # ---- 编码器状态事件 ----
+    elif content.startswith("ENC"):
+        # ENC text start <prompt>
+        # ENC text done <prompt> gather_us=X count=N avg_us=Y
+        # ENC image frame=N resize_hw_us=X resize_avg_us=Y vis_fwd_ms=Z count=C
+        parts = content.split()
+        if len(parts) >= 2 and parts[1] == "text":
+            if len(parts) >= 3 and parts[2] == "start":
+                prompt = " ".join(parts[3:]) if len(parts) > 3 else ""
+                return {"type": "clip_enc", "encoder": "text",
+                        "phase": "start", "prompt": prompt}
+            elif len(parts) >= 3 and parts[2] == "done":
+                d = {"type": "clip_enc", "encoder": "text", "phase": "done"}
+                for kv in parts[3:]:
+                    if "=" in kv:
+                        k, v = kv.split("=", 1)
+                        try: d[k] = float(v)
+                        except ValueError: d[k] = v
+                return d
+        elif len(parts) >= 2 and parts[1] == "image":
+            d = {"type": "clip_enc", "encoder": "image", "phase": "frame"}
+            for kv in parts[2:]:
+                if "=" in kv:
+                    k, v = kv.split("=", 1)
+                    try: d[k] = float(v)
+                    except ValueError: d[k] = v
+            return d
+
     elif content.startswith("MODE"):
         mode = content[5:].strip()
         return {"type": "clip_mode", "mode": mode}
@@ -330,6 +432,44 @@ async def handle_message(ws: WebSocket, msg: dict):
             emit_log("错误：clip_app 启动失败！")
         await manager.send_to(ws, {"type": "model_loaded", "success": success})
         await broadcast_system_status()
+
+    # ---- 模型预热 (开机后运行一次, 预编译 text+vision) ----
+    elif msg_type == "run_warmup":
+        if state.warmup_running:
+            emit_log("模型预热已在运行中", "warning")
+        elif state.warmup_done:
+            emit_log("模型预热已完成，无需重复运行")
+        else:
+            state.warmup_running = True
+            await broadcast_system_status()
+            emit_log("模型预热启动...")
+
+            exe = os.environ.get("CLIP_WARMUP_EXE", "../clip_warmup")
+            cfg = os.environ.get("CLIP_WARMUP_CONFIG", "./configs/app_config.yaml")
+            emit_log(f"执行: {exe} {cfg}")
+            try:
+                loop = asyncio.get_running_loop()
+                proc = await loop.run_in_executor(None, lambda: subprocess.Popen(
+                    [exe, cfg], stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, text=True, bufsize=1))
+                # 等待 [WEB] WARMUP_DONE
+                for line in proc.stdout:
+                    line = strip_ansi(line).strip()
+                    if not line:
+                        continue
+                    emit_log(line)
+                    if "[WEB] WARMUP_DONE" in line:
+                        state.warmup_done = True
+                        await broadcast_system_status()
+                        emit_log("模型预热完成！")
+                # 等待进程自然退出
+                await loop.run_in_executor(None, proc.wait)
+            except FileNotFoundError:
+                emit_log(f"可执行文件未找到: {exe}", "error")
+            except Exception as e:
+                emit_log(f"预热异常: {e}", "error")
+            state.warmup_running = False
+            await broadcast_system_status()
 
     # ---- 连接开发板 ----
     elif msg_type == "connect_board":
@@ -477,12 +617,16 @@ async def handle_message(ws: WebSocket, msg: dict):
     # ---- clip_app 直接命令 ----
     elif msg_type == "clip_cmd":
         cmd = msg.get("cmd", "")
-        if not cmd:
-            emit_log("clip_cmd: 空命令", "warning")
-        elif clip_app is None or clip_app.proc is None:
+        # snap / 空串 = 采集模式下"回车采一张"。clip_app 采集子模式收到空行即采一张,
+        # 所以这里把它归一化成空行透传, 不能再当无效命令拦截。
+        is_snap = (cmd == "snap") or (cmd == "")
+        if clip_app is None or clip_app.proc is None:
             emit_log("clip_app 未启动", "error")
         elif not clip_app.ready:
             emit_log(f"clip_app 未就绪，命令已拒绝: {cmd}", "warning")
+        elif is_snap:
+            clip_app.send_cmd("")          # 发空行 → 采集模式采一张
+            emit_log("clip_cmd: snap (采一张)")
         else:
             clip_app.send_cmd(cmd)
             emit_log(f"clip_cmd: {cmd}")
@@ -705,25 +849,138 @@ async def clip_stdout_reader(ws: WebSocket):
         if line is None:
             await asyncio.sleep(0.1)
             continue
-        line = line.strip()
-        if not line:
+        try:
+            line = line.strip()
+            if not line:
+                continue
+            # 过滤纯 ANSI 控制行（如 ESC[2K 清行），不输出
+            if _ANSI_ONLY.match(line):
+                continue
+            # [WEB] 结构化行 → 解析并推送（先剥离 ANSI 再匹配）
+            clean = strip_ansi(line)
+            if clean.startswith("[WEB]"):
+                parsed = parse_web_line(clean)
+                if parsed:
+                    ptype = parsed["type"]
+                    if ptype == "clip_ready":
+                        clip_app.ready = True
+                        emit_log("clip_app 就绪，可以接收命令")
+                        state.text_encoder_ready = True
+                    elif ptype == "clip_search":
+                        # 读取每个命中项的 jpg → base64, 附加到结果
+                        try:
+                            parsed = await enrich_search_images(parsed)
+                        except Exception as e:
+                            emit_log(f"搜图读图失败(已忽略): {e}", "warning")
+                    elif ptype == "clip_enc":
+                        update_encoder_state(parsed)
+                        await broadcast_system_status()
+                    elif ptype == "clip_result":
+                        # 有推理结果 → 图像编码器运行中
+                        if not state.image_encoder_running:
+                            state.image_encoder_running = True
+                            await broadcast_system_status()
+                    elif ptype == "clip_mode":
+                        state.current_mode_clip = parsed.get("mode", "")
+                    await manager.send_to(ws, parsed)
+                continue
+            # 非 [WEB] 行 → 剥离 ANSI 后转发为控制台日志
+            if clean:
+                emit_log(clean)
+        except Exception as e:
+            # 任何单行处理异常都不能让 reader 协程死掉, 否则后续输出全丢
+            emit_log(f"stdout 处理异常(已忽略, 继续读取): {e}", "warning")
             continue
-        # 过滤纯 ANSI 控制行（如 ESC[2K 清行），不输出
-        if _ANSI_ONLY.match(line):
-            continue
-        # [WEB] 结构化行 → 解析并推送（先剥离 ANSI 再匹配）
-        clean = strip_ansi(line)
-        if clean.startswith("[WEB]"):
-            parsed = parse_web_line(clean)
-            if parsed:
-                if parsed["type"] == "clip_ready":
-                    clip_app.ready = True
-                    emit_log("clip_app 就绪，可以接收命令")
-                await manager.send_to(ws, parsed)
-            continue
-        # 非 [WEB] 行 → 剥离 ANSI 后转发为控制台日志
-        if clean:
-            emit_log(clean)
+
+
+async def enrich_search_images(parsed: dict) -> dict:
+    """搜图结果: 读取每个命中项的 jpg 文件 → base64, 供前端显示
+
+    clip_app 输出的 path 是相对 clip_app 工作目录的.
+    clip_app 由本 server 以 subprocess 启动并继承本 server 的 cwd,
+    因此默认直接按原 path 读取; 若读不到, 尝试用 CLIP_APP_CWD 拼接.
+    """
+    app_cwd = os.environ.get("CLIP_APP_CWD", "")
+    THUMB_MAX = 320        # 缩略图最大边(px)
+    JPEG_Q = 70            # 缩略图 JPEG 质量
+    MAX_ITEMS = 30         # 单条消息最多附带的图数量, 防止库过大撑爆消息
+
+    def resolve(p: str) -> Optional[str]:
+        if not p:
+            return None
+        if Path(p).is_file():
+            return p
+        if app_cwd:
+            cand = str(Path(app_cwd) / p)
+            if Path(cand).is_file():
+                return cand
+        return None
+
+    def make_thumb_b64(real: str) -> Optional[str]:
+        """读图 → 缩略 → jpg base64. 失败返回 None."""
+        img = cv2.imread(real, cv2.IMREAD_COLOR)
+        if img is None:
+            return None
+        h, w = img.shape[:2]
+        scale = THUMB_MAX / max(h, w)
+        if scale < 1.0:
+            img = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))),
+                             interpolation=cv2.INTER_AREA)
+        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, JPEG_Q])
+        if not ok:
+            return None
+        b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
+        return f"data:image/jpeg;base64,{b64}"
+
+    results = parsed.get("results", [])
+    enriched = []
+    for idx, r in enumerate(results):
+        path = r.get("path", "")
+        item = {"path": path, "name": Path(path).name if path else "",
+                "score": r.get("score", 0)}
+        # 关键: 存的 jpg 是全尺寸 HDMI 帧, 多张全尺寸 base64 会让单条 WebSocket
+        # 消息达几 MB 导致连接被断开. 这里统一缩略后编码.
+        if idx < MAX_ITEMS:
+            real = resolve(path)
+            if real:
+                try:
+                    b64 = make_thumb_b64(real)
+                    if b64:
+                        item["base64"] = b64
+                    else:
+                        emit_log(f"搜图图片解码失败: {real}", "warning")
+                except Exception as e:
+                    emit_log(f"搜图缩略失败(已忽略): {real} - {e}", "warning")
+            else:
+                emit_log(f"搜图图片不存在: {path}", "warning")
+        enriched.append(item)
+    parsed["results"] = enriched
+    return parsed
+
+
+def update_encoder_state(parsed: dict):
+    """根据 clip_app 编码事件更新 SystemState 的编码器细粒度状态"""
+    enc = parsed.get("encoder")
+    phase = parsed.get("phase")
+    if enc == "text":
+        if phase == "start":
+            state.text_encoder_ready = True
+            state.text_encoder_busy = True
+            state.text_encoder_current = parsed.get("prompt", "")
+        elif phase == "done":
+            state.text_encoder_busy = False
+            state.text_encoder_current = ""
+            state.text_gather_us_last = parsed.get("gather_us", 0)
+            state.text_gather_us_avg = parsed.get("avg_us", 0)
+            state.text_enc_count = int(parsed.get("count", 0))
+    elif enc == "image":
+        state.image_encoder_running = True
+        state.image_resize_us_last = parsed.get("resize_hw_us", 0)
+        state.image_resize_us_avg = parsed.get("resize_avg_us", 0)
+        state.image_frame_ms_last = parsed.get("vis_fwd_ms", 0)
+        state.fwht_us_last = parsed.get("fwht_us", 0)
+        state.fwht_us_avg = parsed.get("fwht_avg_us", 0)
+        state.image_enc_count = int(parsed.get("count", 0))
 
 
 # ============================================================
@@ -782,4 +1039,11 @@ if __name__ == "__main__":
     print(f"  摄像头索引: {args.camera}")
     print(f"  浏览器打开 http://192.168.137.10:{args.port}")
     print("=" * 55)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    # ws_max_size: 提高 WebSocket 单条消息上限(默认约 1MB), 配合缩略图双保险,
+    # 避免搜图结果(多张 base64 图)/算子可视化大图超限导致连接被断开.
+    # ws_ping_interval/timeout=None: 关闭 keepalive ping. 局域网直连不需要保活;
+    # 且发大图时 keepalive ping 与数据写入并发会触发 websockets 库 _drain 断言崩溃
+    # (keepalive ping failed / AssertionError), 关掉即可根治, 不影响功能.
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info",
+                ws_max_size=16 * 1024 * 1024,
+                ws_ping_interval=None, ws_ping_timeout=None)
