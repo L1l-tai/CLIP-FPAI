@@ -383,9 +383,13 @@ int main(int argc, char* argv[])
     std::vector<double>            db_ts;         // 时间戳 (视频有; 采集为-1)
     std::string db_source = "none";               // "camera" / "video"
 
+    // 视频回放帧 (全部帧, JPEG压缩存储, 30fps+ 流畅回放)
+    std::vector<std::vector<uint8_t>> video_frames_jpg;
+
     auto clear_db = [&]() {
         std::lock_guard<std::mutex> lk(db_mutex);
-        feat_db.clear(); db_frames.clear(); db_ids.clear(); db_ts.clear(); db_source = "none";
+        feat_db.clear(); db_frames.clear(); db_ids.clear(); db_ts.clear();
+        video_frames_jpg.clear(); db_source = "none";
     };
 
     // ---------- 显示 / 交互 状态 ----------
@@ -394,8 +398,14 @@ int main(int argc, char* argv[])
     std::atomic<int> frame_cnt{0};
     std::atomic<bool> imk_armed{false};
 
-    // 采集触发: 主线程按回车 → 置位 → 回调采一张
-    std::atomic<bool> cap_trigger{false};
+    // 采集: 定时自动采样 (4fps, 10秒, 共40帧)
+    const int CAPTURE_DURATION_S = 10;
+    const int SAMPLE_RATE_HZ = 4;
+    const int SAMPLE_INTERVAL_MS = 1000 / SAMPLE_RATE_HZ;  // 250ms
+    const int TOTAL_SAMPLES = CAPTURE_DURATION_S * SAMPLE_RATE_HZ; // 40
+    steady_clock::time_point capture_start_time;
+    steady_clock::time_point last_sample_time;
+    int capture_sample_count = 0;
     std::atomic<bool> cap_finish{false};   // done 提前结束
 
     // 查询: 主线程置位 → 回调线程编码查询
@@ -416,9 +426,10 @@ int main(int argc, char* argv[])
             int n = frame_cnt.fetch_add(1);
             int m = mode.load();
 
-            // ============ 采集模式 ============
+            // ============ 采集模式 (定时自动采样 4fps × 10s) ============
             if (m == CAPTURING) {
-                // arm ImageMake (首次或每次采集后)
+                auto now = steady_clock::now();
+                // arm ImageMake (首次)
                 if (!imk_armed.load()) {
                     auto& reg = fpai_device.defaultRegRegion();
                     reg.write(IMK_BASE + 0x114, imk_addr);
@@ -426,37 +437,56 @@ int main(int argc, char* argv[])
                     initImageMake(fpai_device, 0, NET_W, NET_H, 3, imk_addr, 8, ev, ev);
                     reg.write(IMK_BASE + 0x254, 0x4);
                     imk_armed.store(true);
+                    last_sample_time = now;
                 }
-                // 按回车触发采一张
-                if (cap_trigger.exchange(false)) {
+                // 保存全帧用于回放 (RGB565→BGR→JPEG压缩, ~100KB/帧, 1920×1080)
+                {
+                    cv::Mat bgr;
+                    if (f.type() == CV_8UC2)
+                        cv::cvtColor(f, bgr, cv::COLOR_BGR5652BGR);
+                    else if (f.channels() == 4)
+                        cv::cvtColor(f, bgr, cv::COLOR_BGRA2BGR);
+                    else
+                        bgr = f;
+                    std::vector<uint8_t> jpg;
+                    cv::imencode(".jpg", bgr, jpg, {cv::IMWRITE_JPEG_QUALITY, 60});
+                    video_frames_jpg.push_back(std::move(jpg));
+                }
+                // 每 SAMPLE_INTERVAL_MS 采样一帧编码入库
+                auto elapsed_since_sample = duration_cast<milliseconds>(now - last_sample_time).count();
+                if (elapsed_since_sample >= SAMPLE_INTERVAL_MS) {
+                    last_sample_time = now;
                     auto emb = encode_camera_frame();
                     if (!emb.empty()) {
                         std::lock_guard<std::mutex> lk(db_mutex);
                         feat_db.push_back(emb);
                         db_frames.push_back(f.clone());
-                        db_ids.push_back((int)feat_db.size()-1);
-                        db_ts.push_back(-1.0);
-                        std::cerr << "[CAP] 采集 " << feat_db.size() << "/" << GALLERY_SIZE << std::endl;
+                        db_ids.push_back(capture_sample_count);
+                        db_ts.push_back(capture_sample_count * 0.25);  // 4fps → 0.25s间隔
+                        capture_sample_count++;
+                        std::cerr << "[CAP] 采样 " << capture_sample_count << "/" << TOTAL_SAMPLES << std::endl;
                     }
-                    // re-arm
+                    // re-arm ImageMake
                     auto& reg = fpai_device.defaultRegRegion();
                     reg.write(IMK_BASE + 0x114, imk_addr);
                     std::vector<float> ev;
                     initImageMake(fpai_device, 0, NET_W, NET_H, 3, imk_addr, 8, ev, ev);
                     reg.write(IMK_BASE + 0x254, 0x4);
                 }
-                // 满 或 done → 结束采集
-                bool full;
-                { std::lock_guard<std::mutex> lk(db_mutex); full = (int)feat_db.size() >= GALLERY_SIZE; }
-                if (full || cap_finish.exchange(false)) {
+                // 10秒到 或 done → 结束采集
+                auto elapsed_total = duration_cast<milliseconds>(now - capture_start_time).count();
+                if (elapsed_total >= CAPTURE_DURATION_S * 1000 || cap_finish.exchange(false)) {
                     { std::lock_guard<std::mutex> lk(db_mutex); db_source = "camera"; }
                     mode.store(PLAYING);
-                    std::cerr << "\n[main] === 采集结束, 库已建好, 可输入文本查询 ===" << std::endl;
+                    std::cerr << "\n[main] === 采集结束 (" << feat_db.size()
+                              << " 采样帧, " << video_frames_jpg.size() << " 回放帧) ===" << std::endl;
                 }
-                // 显示实时画面 + 进度
-                int cnt; { std::lock_guard<std::mutex> lk(db_mutex); cnt = (int)feat_db.size(); }
-                char buf[64];
-                snprintf(buf, sizeof(buf), "Capturing %d/%d (Enter=snap)", cnt, GALLERY_SIZE);
+                // 显示实时画面 + 进度 + 倒计时
+                int remain_s = CAPTURE_DURATION_S - (int)(elapsed_total / 1000);
+                if (remain_s < 0) remain_s = 0;
+                char buf[96];
+                snprintf(buf, sizeof(buf), "Capturing %d/%d  %ds left",
+                         capture_sample_count, TOTAL_SAMPLES, remain_s);
                 cv::putText(f, buf, cv::Point(40, 90),
                             cv::FONT_HERSHEY_DUPLEX, 1.5, cv::Scalar(0,255,255), 3);
                 return;
@@ -517,17 +547,33 @@ int main(int argc, char* argv[])
                                 cv::FONT_HERSHEY_DUPLEX, 1.3, cv::Scalar(0,255,0), 3);
                 }
             } else if (m == PLAYING) {
-                // 有库则回放库中帧; 否则显示实时画面(相机帧f原样)
                 std::lock_guard<std::mutex> lk(db_mutex);
-                if (!db_frames.empty()) {
+                // cap 来源: 用 video_frames_jpg 全帧回放 (JPEG解码, 30fps+ 流畅)
+                if (db_source == "camera" && !video_frames_jpg.empty()) {
+                    auto now = steady_clock::now();
+                    auto elapsed = duration_cast<milliseconds>(now - capture_start_time).count();
+                    auto cycle_ms = elapsed % (CAPTURE_DURATION_S * 1000);
+                    int idx = (int)(cycle_ms * video_frames_jpg.size() / (CAPTURE_DURATION_S * 1000));
+                    if (idx >= (int)video_frames_jpg.size()) idx = (int)video_frames_jpg.size() - 1;
+                    cv::Mat decoded = cv::imdecode(video_frames_jpg[idx], cv::IMREAD_COLOR);
+                    if (!decoded.empty()) {
+                        if (f.type() == CV_8UC2)
+                            cv::cvtColor(decoded, f, cv::COLOR_BGR2BGR565);
+                        else
+                            decoded.copyTo(f);
+                    }
+                    char buf[96];
+                    snprintf(buf, sizeof(buf), "Replay %.1fs  #%d/%d",
+                             cycle_ms / 1000.0, idx, (int)video_frames_jpg.size());
+                    cv::putText(f, buf, cv::Point(40, 80),
+                                cv::FONT_HERSHEY_DUPLEX, 1.0, cv::Scalar(255,255,0), 2);
+                } else if (!db_frames.empty()) {
+                    // vid 来源: 原有回放逻辑
                     int play_idx = (n / 3) % (int)db_frames.size();
                     db_frames[play_idx].copyTo(f);
                     char buf[64];
-                    if (db_source == "video")
-                        snprintf(buf, sizeof(buf), "Play #%d/%d t=%.2fs",
-                                 play_idx, (int)db_frames.size(), db_ts[play_idx]);
-                    else
-                        snprintf(buf, sizeof(buf), "Gallery #%d/%d", play_idx, (int)db_frames.size());
+                    snprintf(buf, sizeof(buf), "Play #%d/%d t=%.2fs",
+                             play_idx, (int)db_frames.size(), db_ts[play_idx]);
                     cv::putText(f, buf, cv::Point(40, 80),
                                 cv::FONT_HERSHEY_DUPLEX, 1.0, cv::Scalar(255,255,0), 2);
                 }
@@ -544,8 +590,8 @@ int main(int argc, char* argv[])
     // ---------- 命令帮助 ----------
     auto print_help = [&]() {
         std::cout << "\n=== CLIP Search 命令 ===" << std::endl;
-        std::cout << "  cap                        实时采集(按回车采1张, 满" << GALLERY_SIZE
-                  << "张自动结束; 采集中输 done 提前结束)" << std::endl;
+        std::cout << "  cap                        自动采集" << CAPTURE_DURATION_S << "s ("
+                  << SAMPLE_RATE_HZ << "fps采样编码, 全帧回放, done提前结束)" << std::endl;
         std::cout << "  vid <dir> <fps> [stride]   导入jpg序列建库 (例: vid board_data/frames/ 30 15)" << std::endl;
         std::cout << "  <文本>                     查询当前库 → Top-K + HDMI显示Top-1" << std::endl;
         std::cout << "  play                       回到回放/实时(清除Top-1)" << std::endl;
@@ -558,13 +604,12 @@ int main(int argc, char* argv[])
     // ---------- 主线程: 命令解析 ----------
     std::string line;
     while (std::getline(std::cin, line)) {
-        // 采集模式下, 回车(空行)= 采一张
+        // 采集模式下, done 提前结束
         if (mode.load() == CAPTURING) {
             std::string t = line;
             size_t s = t.find_first_not_of(" \t"); size_t e = t.find_last_not_of(" \t\r");
             if (s != std::string::npos) t = t.substr(s, e-s+1); else t = "";
             if (t == "done") { cap_finish.store(true); std::cout << "[main] 结束采集" << std::endl; }
-            else { cap_trigger.store(true); }  // 空行或任意 = 采一张
             continue;
         }
 
@@ -583,9 +628,13 @@ int main(int argc, char* argv[])
             clear_db();
             imk_armed.store(false);
             top1_idx.store(-1);
+            capture_start_time = steady_clock::now();
+            last_sample_time = capture_start_time;
+            capture_sample_count = 0;
             mode.store(CAPTURING);
-            std::cout << "[main] 进入采集模式: 按回车采1张 (满" << GALLERY_SIZE
-                      << "自动结束, done提前结束)" << std::endl;
+            std::cout << "[main] 自动采集 " << CAPTURE_DURATION_S << "s, "
+                      << SAMPLE_RATE_HZ << "fps 采样编码 (共" << TOTAL_SAMPLES << "帧)"
+                      << ", 全帧回放" << std::endl;
         }
         else if (line.rfind("vid", 0) == 0) {
             std::istringstream iss(line);
