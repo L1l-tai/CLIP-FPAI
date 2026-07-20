@@ -617,16 +617,10 @@ async def handle_message(ws: WebSocket, msg: dict):
     # ---- clip_app 直接命令 ----
     elif msg_type == "clip_cmd":
         cmd = msg.get("cmd", "")
-        # snap / 空串 = 采集模式下"回车采一张"。clip_app 采集子模式收到空行即采一张,
-        # 所以这里把它归一化成空行透传, 不能再当无效命令拦截。
-        is_snap = (cmd == "snap") or (cmd == "")
         if clip_app is None or clip_app.proc is None:
             emit_log("clip_app 未启动", "error")
         elif not clip_app.ready:
             emit_log(f"clip_app 未就绪，命令已拒绝: {cmd}", "warning")
-        elif is_snap:
-            clip_app.send_cmd("")          # 发空行 → 采集模式采一张
-            emit_log("clip_cmd: snap (采一张)")
         else:
             clip_app.send_cmd(cmd)
             emit_log(f"clip_cmd: {cmd}")
@@ -901,9 +895,9 @@ async def enrich_search_images(parsed: dict) -> dict:
     因此默认直接按原 path 读取; 若读不到, 尝试用 CLIP_APP_CWD 拼接.
     """
     app_cwd = os.environ.get("CLIP_APP_CWD", "")
-    THUMB_MAX = 320        # 缩略图最大边(px)
-    JPEG_Q = 70            # 缩略图 JPEG 质量
-    MAX_ITEMS = 30         # 单条消息最多附带的图数量, 防止库过大撑爆消息
+    THUMB_MAX = 160        # 缩略图最大边(px)
+    JPEG_Q = 50            # 缩略图 JPEG 质量
+    MAX_ITEMS = 10         # 单条消息最多附带的图数量, 防止库过大撑爆消息
 
     def resolve(p: str) -> Optional[str]:
         if not p:

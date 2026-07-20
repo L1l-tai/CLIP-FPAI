@@ -217,8 +217,7 @@ label.fld{font-size:11px;color:var(--text-dim);display:block;margin-bottom:3px;}
       <div class="card-header">文本搜图</div>
       <div style="font-size:10px;color:var(--text-dim);margin-bottom:6px;">建库: 实时采集 或 导入视频帧</div>
       <div class="btn-group" style="margin-bottom:6px;">
-        <button class="btn search-btn" onclick="sendMsg({type:'clip_cmd',cmd:'cap'})" style="flex:1;">实时采集</button>
-        <button class="btn search-btn" onclick="capSnap()" style="flex:1;">拍一张</button>
+        <button class="btn search-btn" onclick="sendMsg({type:'clip_cmd',cmd:'cap'})" style="flex:1;">实时采集 (10s)</button>
         <button class="btn search-btn" onclick="sendMsg({type:'clip_cmd',cmd:'done'})" style="flex:1;">结束采集</button>
       </div>
       <div style="margin-bottom:6px;">
@@ -781,7 +780,7 @@ function addLabel(){
   sendMsg({type:'clip_cmd', cmd:'add '+text});
   inp.value=''; addLog('添加标签: '+text);
 }
-function capSnap(){ sendMsg({type:'clip_cmd', cmd:'snap'}); addLog('拍摄一张'); }
+
 function sendVid(){
   const inp = document.getElementById('vid-cmd-input');
   const c = inp.value.trim();

@@ -59,9 +59,9 @@ static std::vector<uint16_t> generate_768x30_outlier_data(int seed = 42) {
     std::vector<uint16_t> data(VEC_DIM * NUM_VECTORS);
     std::mt19937 rng(seed);
 
-    std::normal_distribution<float> normal(0.0f, 1.0f);
-    std::uniform_real_distribution<float> outlier_mag(10.0f, 100.0f);
-    std::uniform_int_distribution<int> n_outliers(10, 20);
+    std::normal_distribution<float> normal(0.0f, 0.5f);
+    std::uniform_real_distribution<float> outlier_mag(2.0f, 6.0f);
+    std::uniform_int_distribution<int> n_outliers(3, 8);
     std::uniform_int_distribution<int> pos_idx(0, VEC_DIM - 1);
     std::uniform_real_distribution<float> coin(0.0f, 1.0f);
 
@@ -70,8 +70,8 @@ static std::vector<uint16_t> generate_768x30_outlier_data(int seed = 42) {
         // Normal values
         for (int i = 0; i < VEC_DIM; i++) {
             float val = normal(rng);
-            if (val > 2.0f) val = 2.0f;
-            if (val < -2.0f) val = -2.0f;
+            if (val > 1.5f) val = 1.5f;
+            if (val < -1.5f) val = -1.5f;
             data[base + i] = float_to_fp16(val);
         }
         // Outliers

@@ -449,7 +449,7 @@ int main(int argc, char* argv[])
                     else
                         bgr = f;
                     std::vector<uint8_t> jpg;
-                    cv::imencode(".jpg", bgr, jpg, {cv::IMWRITE_JPEG_QUALITY, 60});
+                    cv::imencode(".jpg", bgr, jpg, {cv::IMWRITE_JPEG_QUALITY, 80});
                     video_frames_jpg.push_back(std::move(jpg));
                 }
                 // 每 SAMPLE_INTERVAL_MS 采样一帧编码入库
@@ -484,9 +484,8 @@ int main(int argc, char* argv[])
                 // 显示实时画面 + 进度 + 倒计时
                 int remain_s = CAPTURE_DURATION_S - (int)(elapsed_total / 1000);
                 if (remain_s < 0) remain_s = 0;
-                char buf[96];
-                snprintf(buf, sizeof(buf), "Capturing %d/%d  %ds left",
-                         capture_sample_count, TOTAL_SAMPLES, remain_s);
+                char buf[64];
+                snprintf(buf, sizeof(buf), "Capturing... %ds left", remain_s);
                 cv::putText(f, buf, cv::Point(40, 90),
                             cv::FONT_HERSHEY_DUPLEX, 1.5, cv::Scalar(0,255,255), 3);
                 return;
@@ -562,9 +561,8 @@ int main(int argc, char* argv[])
                         else
                             decoded.copyTo(f);
                     }
-                    char buf[96];
-                    snprintf(buf, sizeof(buf), "Replay %.1fs  #%d/%d",
-                             cycle_ms / 1000.0, idx, (int)video_frames_jpg.size());
+                    char buf[64];
+                    snprintf(buf, sizeof(buf), "Replay %.1fs", cycle_ms / 1000.0);
                     cv::putText(f, buf, cv::Point(40, 80),
                                 cv::FONT_HERSHEY_DUPLEX, 1.0, cv::Scalar(255,255,0), 2);
                 } else if (!db_frames.empty()) {
