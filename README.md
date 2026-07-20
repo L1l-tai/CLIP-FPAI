@@ -7,17 +7,23 @@
 ## 目录结构
 
 ```
-├── rtl/                    # RTL 设计（自定义算子硬件实现）
-├── FPGA/                   # FPGA 工程与 IP 配置
-├── deploy/                 # 模型部署（推理流程、配置文件）
+├── rtl/custom_op/          # RTL 设计 (Gather/Hadamard/Resize + 公共模块)
+├── sim/                    # 仿真脚本 (hadamard/resize/gather/fmt_cvt)
+├── deploy/                 # Python 模型部署 (SDK API 参考)
+├── test/
+│   ├── deploy/             # C++ 部署程序 (clip_app_web/dual/search_all/warmup)
+│   ├── on-board-test/      # 单算子 C++ 测试 (fwht/resize/gather)
+│   ├── soft-verification/  # Python Golden 模型
+│   ├── Visualization/      # Python 可视化脚本
+│   ├── web_ui/             # Web 演示系统 (server_onboard.py + operator_analysis)
+│   ├── input-data/         # 算子测试输入 .mem
+│   └── output-data/        # 算子测试输出
+├── op/                     # 自定义算子替换 (ONNX Parser / Pass)
 ├── quant_optimize/         # 量化优化工具链
-├── op/                     # 自定义算子替换（ONNX Parser / Pass）
 ├── processor/              # CLIP 图像预处理器配置
-├── fmodel/                 # ONNX 模型文件
-├── configs/                # 部署配置文件
-├── sim/                    # 仿真脚本
-├── test/                   # 测试、Golden 模型、可视化、Web UI
-└── qtset/                  # 量化校准数据集
+├── fmodel/                 # ONNX 模型文件 (PC 端)
+├── imodel/                 # NPU 模型文件 (板端)
+├── configs/                # YAML 配置文件
 ```
 
 ---
@@ -33,7 +39,6 @@
 | **Gather**   | `rtl/custom_op/gather/`      | 索引聚集 — 根据索引表从 DDR 读取不规则位置数据              |
 | **Hadamard** | `rtl/custom_op/hadamard/`    | 快速沃尔什-哈达玛变换 (FWHT) — 6 级蝶形网络，支持 INT8/FP16 |
 | **Resize**   | `rtl/custom_op/resize_crop/` | 双线性插值缩放 + 中心裁剪                                    |
-
 ### 1.2 公共模块
 
 | 路径                         | 说明                                    |
@@ -79,42 +84,36 @@ RTL代码详细说明：[RTL代码介绍](./rtl/rtl_summary.md)
 
 ---
 
-## 三、FPGA — 工程与 IP 配置
+## 四、test/deploy — C++ 部署程序
 
-**路径**: `FPGA/`
+**路径**: `test/deploy/`
 
-- `FPGA/30TAI-PRJ/` — FPGA 工程文件
-- `ip_patch/edif/` — 综合后 EDIF 网表
-- `ip_patch/tools/` — bitstream 替换等工具
-- `ip_patch/process_control/` — Vivado 综合/实现流程控制
+| 程序 | 用途 | 配置文件 |
+|------|------|---------|
+| `clip_app_web` | **主程序**: 实时分类 + 搜图, 支持 Web UI (子进程 stdin/stdout) | `configs/app_config.yaml` |
+| `clip_dual` | 独立实时分类 (命令行交互, 增删标签) | `configs/clip_config.yaml` |
+| `clip_search_all` | 独立搜图 (10s 自动采集 + JPEG 回放 + 视频导入 + 查询) | `configs/search_config.yaml` |
+| `clip_warmup` | 模型预热 (加载 text+vision 模型, 启动 camera+HDMI, 编译完成后退出) | `configs/clip_config.yaml` |
 
----
+### 辅助模块
 
-## 四、deploy — 模型部署
+| 文件 | 说明 |
+|------|------|
+| `simple_tokenizer.hpp` | C++ CLIP BPE 分词器 (替代 Python gen_input_ids.py) |
+| `op-func/op_resize.h` / `.cpp` | Resize 硬算子 C++ 封装 |
+| `compile_fpai_target.hpp` | NPU 编译目标配置 |
 
-**路径**: `deploy/`
+### Python Runtime (参考)
 
-### 目录结构
+**路径**: `deploy/modelzoo/clip/pyrt/`
 
-```
-deploy/
-├── Deps/modelzoo/          # 运行时依赖库（复旦微提供）
-├── modelzoo/clip/          # CLIP 部署推理代码
-│   ├── pyrt/               # Python Runtime
-│   ├── io/                 # 测试数据
-│   └── cfg/                # 配置文件
-└── cfg/                    # 全局配置
-```
-
-### CLIP 推理脚本
-
-| 脚本                             | 功能                              |
-| -------------------------------- | --------------------------------- |
-| `clip.py`                      | CLIP 主推理流程                   |
-| `clip_img_host.py`             | 图像特征提取                      |
-| `clip_text_host.py`            | 文本特征提取                      |
-| `clip_full_pipeline.py`        | 完整 pipeline（图像+文本+相似度） |
-| `clip_full_pipeline_camera.py` | 摄像头实时推理                    |
+| 脚本 | 功能 |
+|------|------|
+| `clip.py` | CLIP 主推理流程 |
+| `clip_img_host.py` | 图像特征提取 |
+| `clip_text_host.py` | 文本特征提取 |
+| `clip_full_pipeline.py` | 完整 pipeline |
+| `clip_full_pipeline_camera.py` | 摄像头实时推理 |
 
 ---
 
@@ -198,33 +197,34 @@ Golden 模型用于仿真对比和 Web UI 分析。
 
 ### 7.5 Web 演示系统
 
-**路径**: `test/web_ui/visualize_prj/`
+**路径**: `test/web_ui/`
 
-基于 FastAPI + WebSocket，支持板端部署（`--host 0.0.0.0`）和本地开发。
+基于 FastAPI + WebSocket，通过子进程控制板端 C++ 程序 (`clip_app_web`)，支持板端部署和 PC 浏览器访问。
 
 **启动**：
 
 ```bash
-cd test/web_ui/visualize_prj
+cd test/web_ui
 pip install fastapi uvicorn websockets numpy Pillow matplotlib
-python server.py --host 0.0.0.0 --port 8888
+python server_onboard.py --host 0.0.0.0 --port 8888
 ```
 
-**三种视图**：
+**功能**：
 
-- **实时推理** — 摄像头 + CLIP 图文匹配（需 ONNX 模型）
-- **文本搜图** — 以文找图检索
-- **算子测试** — FWHT / Resize / Gather 精度分析与可视化
+- **模型预热** — 一键运行 `clip_warmup` 预编译模型
+- **实时分类** — 摄像头 + CLIP 图文匹配，运行时增删标签
+- **文本搜图** — 10s 自动采集 + JPEG 回放 + 以文找图
+- **算子测试** — FWHT / Resize / Gather 硬件验证与可视化
 
 **后端模块**：
 
-| 文件                     | 功能                               |
-| ------------------------ | ---------------------------------- |
-| `server.py`            | FastAPI + WebSocket 服务端         |
-| `inference_engine.py`  | CLIP ONNX 推理 + HardOp 模拟       |
-| `operator_analysis.py` | 算子分析封装（FWHT/Resize/Gather） |
+| 文件 | 功能 |
+|------|------|
+| `server_onboard.py` | FastAPI + WebSocket 服务端, 管理 clip_app 子进程 |
+| `inference_engine.py` | CLIP ONNX 推理 + HardOp 模拟 (PC 端) |
+| `operator_analysis_onboard.py` | 板端算子分析 (C++ 硬件执行 + Python 可视化) |
 
-部署文档：[DEPLOY.md](test/web_ui/visualize_prj/DEPLOY.md)
+部署文档：[DEPLOY.md](test/DEPLOY.md)
 
 ---
 
@@ -233,6 +233,8 @@ python server.py --host 0.0.0.0 --port 8888
 | 目录           | 说明                                                |
 | -------------- | --------------------------------------------------- |
 | `processor/` | CLIP 图像预处理器                                   |
-| `fmodel/`    | ONNX 模型文件（text_model + vision_model_hadamard） |
+| `fmodel/`    | ONNX 模型文件 (PC 端)                               |
+| `imodel/`    | NPU 模型文件 (板端, JSON+RAW)                       |
 | `configs/`   | YAML 配置文件                                       |
+| `board_data/`| 板端数据 (token_emb.bin, pos_emb.bin, text_proj.bin, merges.txt) |
 | `qtset/`     | 量化校准数据集                                      |
