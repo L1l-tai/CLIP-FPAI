@@ -6,15 +6,15 @@ module hadamard_sim;
     localparam CLK_PERIOD = 10;      // 10ns = 100MHz
     localparam RA_CLK_PERIOD = 10;   // 10ns = 100MHz
 
-    // 测试数据参数 (FP16模式, 768�? × 30向量, 模拟CLIP文本特征+离群�?)
+    // 测试数据参数 (FP16模式, 768�?? × 30向量, 模拟CLIP文本特征+离群�??)
     localparam VEC_DIM       = 768;
     localparam NUM_VECTORS   = 30;
     localparam TOTAL_ELEMS   = VEC_DIM * NUM_VECTORS;   // 23040
-    localparam TOTAL_BLOCKS  = TOTAL_ELEMS / 32;         // 720 (FP16: 32�?/�?)
+    localparam TOTAL_BLOCKS  = TOTAL_ELEMS / 32;         // 720 (FP16: 32�??/�??)
     localparam FP16_PER_BLOCK = 32;
 
     localparam SRC_BASE_ADDR = 32'h0000_2000;
-    localparam DST_BASE_ADDR = 32'h0001_0000;  // DST at 0x10000, clear of 720-block SRC�?
+    localparam DST_BASE_ADDR = 32'h0001_0000;  // DST at 0x10000, clear of 720-block SRC�??
     localparam MEM_DEPTH = 4096;
 
     // 输入信号
@@ -23,7 +23,7 @@ module hadamard_sim;
     reg rst_n;
     reg ra_rst_n;
 
-    // 寄存器访问接�? (DUT中为从机, TB中为主机)
+    // 寄存器访问接�?? (DUT中为从机, TB中为主机)
     reg  [31:0] itf_ra_awaddr;
     reg  [31:0] itf_ra_awdata;
     reg         itf_ra_awvalid;
@@ -53,7 +53,7 @@ module hadamard_sim;
 
     wire        reset_reg;
 
-    // 观测 hadamard 完成信号 (层次化引�?)
+    // 观测 hadamard 完成信号 (层次化引�??)
     wire        hd_comp_done;
     wire        hd_rd_data_ready;
     wire        hd_cal_percision;
@@ -63,7 +63,7 @@ module hadamard_sim;
     assign hd_cal_percision = U_customop_top.U_hadamard.cal_percision;
     assign hd_rd_cnt        = U_customop_top.U_hadamard.rd_cnt;
 
-    // 监控 rready �? rd_data_ready 变化
+    // 监控 rready �?? rd_data_ready 变化
     reg         itf_rready_r;
     always @(posedge clk) itf_rready_r <= itf_rready;
     wire rready_negedge;
@@ -76,7 +76,7 @@ module hadamard_sim;
                      hd_rd_data_ready, hd_rd_cnt, hd_fsm_state, hd_cal_percision);
     end
 
-    // DUT实例�?
+    // DUT实例�??
     customop_top U_customop_top (
         .itf_ra_awaddr     (itf_ra_awaddr),
         .itf_ra_awdata     (itf_ra_awdata),
@@ -118,12 +118,12 @@ module hadamard_sim;
         forever #(RA_CLK_PERIOD/2) ra_clk = ~ra_clk;
     end
 
-    // 仿真用内存模�?
+    // 仿真用内存模�??
     reg [511:0] mem [0:MEM_DEPTH-1];
     integer i;
     reg error_flag;
 
-    // 地址到内存索引的映射函数 (�? 64-byte/512-bit 行为单位)
+    // 地址到内存索引的映射函数 (�?? 64-byte/512-bit 行为单位)
     function automatic integer get_mem_index;
         input [31:0] addr;
         begin
@@ -176,9 +176,9 @@ module hadamard_sim;
     endfunction
 
     // ============================================================
-    // $readmemh 加载数据 (�?可靠, 不依�? $fopen 文件权限)
-    // 使用�? hex 格式 .txt, 每行 128 hex 字符 = 512-bit �?
-    // 用法: Vivado 中将 .txt 添加�? Simulation Source, 自动复制到仿真目�?
+    // $readmemh 加载数据 (�??可靠, 不依�?? $fopen 文件权限)
+    // 使用�?? hex 格式 .txt, 每行 128 hex 字符 = 512-bit �??
+    // 用法: Vivado 中将 .txt 添加�?? Simulation Source, 自动复制到仿真目�??
     // ============================================================
     task load_mem_from_file;
         input string filename;
@@ -192,16 +192,16 @@ module hadamard_sim;
 
     // ============================================================
     // 真实 AXI DDR 模型 (对齐硬件验证行为)
-    // - AR: 脉冲�? ready + r_busy 串行�? (�?次AR→一次R握手完成后才接受下一�?)
-    // - R:  AR握手�? READ_LATENCY 拍延�?, r_busy 在R握手后释�?
-    // - AW: 脉冲�? ready, �? valid 唤醒
+    // - AR: 脉冲�?? ready + r_busy 串行�?? (�??次AR→一次R握手完成后才接受下一�??)
+    // - R:  AR握手�?? READ_LATENCY 拍延�??, r_busy 在R握手后释�??
+    // - AW: 脉冲�?? ready, �?? valid 唤醒
     // ============================================================
     localparam READ_LATENCY = 4;
     reg         r_busy;
     reg [31:0]  pending_ar_addr;
     reg [7:0]   r_latency_cnt;
 
-    // ---- 读地�?通道: 脉冲 ready + r_busy 串行�? ----
+    // ---- 读地�??通道: 脉冲 ready + r_busy 串行�?? ----
     always @(posedge clk) begin
         if (!rst_n) begin
             itf_arready <= 1'b0;
@@ -220,7 +220,7 @@ module hadamard_sim;
         end
     end
 
-    // ---- 读数据�?�道: 延迟后返�?, r_busy �? R 握手完成后释�? ----
+    // ---- 读数据�?�道: 延迟后返�??, r_busy �?? R 握手完成后释�?? ----
     always @(posedge clk) begin
         if (!rst_n) begin
             itf_rvalid     <= 1'b0;
@@ -248,7 +248,7 @@ module hadamard_sim;
         end
     end
 
-    // ---- 写�?�道: 脉冲�? ready ----
+    // ---- 写�?�道: 脉冲�?? ready ----
     always @(posedge clk) begin
         if (!rst_n) begin
             itf_awready <= 1'b0;
@@ -285,7 +285,7 @@ module hadamard_sim;
         ra_rst_n = 1;
         #100;
 
-        // 初始化内�?
+        // 初始化内�??
         $display("Initializing Memory Array (%d entries)...", MEM_DEPTH);
         for (i = 0; i < MEM_DEPTH; i = i + 1) begin
             mem[i] = 512'd0;
@@ -294,7 +294,7 @@ module hadamard_sim;
         // 加载测试数据
         load_mem_from_file("fwht-input-768x30.mem", SRC_BASE_ADDR);
 
-        // 配置寄存�?
+        // 配置寄存�??
         $display("Configuring Hadamard Registers (FP16, %d vectors x %d)...", NUM_VECTORS, VEC_DIM);
         ra_write_reg(16'h07, 32'd2);                           // hd_data_width
         ra_write_reg(16'h08, 32'd1);                           // cal_percision (FP16)
@@ -319,7 +319,7 @@ module hadamard_sim;
         join_any
         disable fork;
 
-        // 等待�?后的 AXI 写事务完�? + 内存模型流水线排�?
+        // 等待�??后的 AXI 写事务完�?? + 内存模型流水线排�??
         repeat (10) @(posedge clk);
 
         $display("DMA Transfer Completed.");
@@ -343,7 +343,7 @@ module hadamard_sim;
             end
             $display("Result: %d/%d blocks have data, %d blocks empty",
                      pass_cnt, TOTAL_BLOCKS, warn_cnt);
-            // 打印首尾几个块的数据，方便快速检�?
+            // 打印首尾几个块的数据，方便快速检�??
             for (i = 0; i < 2; i = i + 1) begin
                 integer ai; ai = DST_BASE_ADDR + i * 64;
                 $display("  Output block[%d] addr=0x%08X lo=0x%016X", i, ai, mem[get_mem_index(ai)][63:0]);
@@ -363,7 +363,7 @@ module hadamard_sim;
         $finish;
     end
 
-    // 寄存器写入任�?
+    // 寄存器写入任�??
     task ra_write_reg;
         input [15:0] addr_offset;
         input [31:0] data;
