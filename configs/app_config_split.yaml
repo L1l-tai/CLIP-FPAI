@@ -1,0 +1,30 @@
+# clip_app_split 配置 (供实时分类 + 查找, 视觉三段切分: seg_pre -> FWHT -> seg_post)
+# 注意: clip_app_split 由 server_onboard.py 以 "../clip_app_split ./configs/app_config_split.yaml" 启动
+# 路径基准 = clip_app_split 可执行文件所在目录 (/root/fpai_demo_app/examples/1/2/)
+
+camera_yaml: "/root/fpai_demo_app/examples/1/2/configs/ZG/sdicamera+yolov5+hdmi.yaml"
+
+# 视觉编码器切分模型 (板卡绝对路径, 四个 json/raw 平铺在 examples/split/)
+pre_json:  "/root/fpai_demo_app/examples/split/vit_seg_pre_ZG.json"
+pre_raw:   "/root/fpai_demo_app/examples/split/vit_seg_pre_ZG.raw"
+post_json: "/root/fpai_demo_app/examples/split/vit_seg_post_ZG.json"
+post_raw:  "/root/fpai_demo_app/examples/split/vit_seg_post_ZG.raw"
+
+# 文本编码器中间段 (照原 app_config.yaml)
+text_json: "/root/fpai_demo_app/examples/1/2/imodel/ZG/text_middle_ZG.json"
+text_raw:  "/root/fpai_demo_app/examples/1/2/imodel/ZG/text_middle_ZG.raw"
+
+# 数据目录 (token_emb/pos_emb/text_proj/input_ids/bpe词表)
+data_dir: "board_data/"
+
+# 初始标签文件 (每行一个英文标签, 可选)
+labels_txt: "board_data/labels.txt"
+
+# 实时分类间隔 (每 N 帧分类一次)
+clip_interval: 5
+
+# 搜图采集最大张数
+gallery_size: 10
+
+# 实时采集(cap)时把每帧存 jpg 的目录, 供 Web UI 读图显示
+cap_frames_dir: "board_data/cap_frames/"

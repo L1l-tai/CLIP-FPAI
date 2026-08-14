@@ -1,0 +1,5 @@
+bear
+cat
+dog
+drone
+ambulance

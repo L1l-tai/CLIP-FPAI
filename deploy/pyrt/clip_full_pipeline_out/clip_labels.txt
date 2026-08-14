@@ -1,0 +1,5 @@
+drone
+car
+plane
+train
+boat

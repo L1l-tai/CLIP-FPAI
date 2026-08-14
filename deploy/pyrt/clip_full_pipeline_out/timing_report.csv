@@ -1,0 +1,12 @@
+module,stage,elapsed_ms,elapsed_s,extra
+text_encoder,forward,1502.859,1.502859,"prompt=drone"
+text_encoder,forward,1032.491,1.032491,"prompt=car"
+text_encoder,forward,1054.014,1.054014,"prompt=plane"
+text_encoder,forward,1023.813,1.023813,"prompt=train"
+text_encoder,forward,1053.698,1.053698,"prompt=boat"
+text_encoder,total,6976.288,6.976288,"num_texts=5, avg=1395.258 ms/text"
+image_encoder,preprocess,32.682,0.032682,"drone.png"
+image_encoder,forward,1684.330,1.684330,"drone.png"
+image_encoder,total,3414.539,3.414539,"drone.png"
+postprocess,ranking,0.263,0.000263,"num_labels=5"
+full_pipeline,total,10897.396,10.897396,"after label input"

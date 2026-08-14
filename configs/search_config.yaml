@@ -1,0 +1,19 @@
+# CLIP Search (实时采集 + 视频序列导入) 配置文件
+# 用法: ./clip_search search_config.yaml
+
+# 相机/HDMI 配置 (复旦微原有 yaml, 不改它, 只引用)
+camera_yaml: "/root/fpai_demo_app/examples/1/2/configs/ZG/sdicamera+yolov5+hdmi.yaml"
+
+# 图像编码器 (FP32 版, CPU归一化)
+vis_json: "imodel/vit_b32/clip_vit_b32_ZG.json"
+vis_raw:  "imodel/vit_b32/clip_vit_b32_ZG.raw"
+
+# 文本编码器中间段
+text_json: "imodel/ZG/text_middle_ZG.json"
+text_raw:  "imodel/ZG/text_middle_ZG.raw"
+
+# 文本数据目录 (token_emb.bin / pos_emb.bin / text_proj.bin / bpe词表)
+data_dir: "board_data/"
+
+# 实时采集: 采满多少张自动结束
+gallery_size: 20

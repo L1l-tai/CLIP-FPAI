@@ -1,0 +1,20 @@
+imodel:
+  dir: "../../imodel/text_encoder"
+  stage: "g"
+  runbackend: "zg330"
+  cudamode: 0
+  speedmode: 0
+  compressFtmp: 0
+  ip: "192.168.137.10"
+  dump_output: false
+  dump_format: "npy"
+  log_path: "./log"
+
+text:
+  tokenizer_dir: "F:/CICC2026/clip-vit-base-patch32-zg"
+  prompt: "a photo of a cat"
+  max_len: 77
+save:
+  save_npy: true
+  save_dir: "./npy_out"
+  save_prefix: "clip_text"

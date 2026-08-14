@@ -1,0 +1,5 @@
+Top  1: drone                          score = 0.273466
+Top  2: plane                          score = 0.202614
+Top  3: car                            score = 0.186951
+Top  4: train                          score = 0.150241
+Top  5: boat                           score = 0.149298
