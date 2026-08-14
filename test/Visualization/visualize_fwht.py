@@ -15,7 +15,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'soft-verification'))
-from fwht_golden import fp16_to_float
+from fwht_golden import read_fp16_mem
 
 
 VEC_DIM = 768
@@ -71,16 +71,8 @@ def apply_h12_mix(vec: list) -> list:
 
 
 def read_mem(path: str) -> list:
-    """Read .mem file, extract FP16 values as float list."""
-    data = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line and len(line) == 128:
-                blk = int(line, 16)
-                for j in range(32):
-                    data.append((blk >> (16 * j)) & 0xFFFF)
-    return [fp16_to_float(x) for x in data]
+    """Read .mem file, extract FP16 values as float list (auto byte-order)."""
+    return read_fp16_mem(path)
 
 
 def plot_waveform(ax, data, title, color='steelblue', mark_outliers=True,

@@ -3,18 +3,11 @@ Analyze FWHT's role in activation quantization: FP16 -> INT8 -> INT4 cascade.
 """
 import sys, os, numpy as np
 sys.path.insert(0, os.path.dirname(__file__))
-from fwht_golden import fp16_to_float, float_to_fp16, fwht_fp16
+from fwht_golden import fp16_to_float, float_to_fp16, fwht_fp16, read_fp16_mem_raw
 
 def read_mem(path):
-    data = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line and len(line) == 128:
-                blk = int(line, 16)
-                for j in range(32):
-                    data.append((blk >> (16 * j)) & 0xFFFF)
-    return data
+    """读取 .mem 文件为 FP16 原始整数列表 (自动检测字节序)。"""
+    return read_fp16_mem_raw(path)
 
 def quant_snr(data, n_bits=8):
     """Per-channel quantization SNR (dB)."""

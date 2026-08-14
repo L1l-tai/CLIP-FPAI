@@ -17,7 +17,7 @@ import os
 import struct
 
 sys.path.insert(0, os.path.dirname(__file__))
-from fwht_golden import fwht_fp16, fwht_int8, fp16_to_float, float_to_fp16
+from fwht_golden import fwht_fp16, fwht_int8, fp16_to_float, float_to_fp16, detect_mem_order
 
 
 def read_blocks(filepath: str) -> list:
@@ -43,29 +43,44 @@ def write_blocks(filepath: str, blocks: list):
 # FP16 verification
 # =========================================================================
 
-def fp16_block_to_values(block_lo: int, block_hi: int) -> list:
+def _swap16(x: int) -> int:
+    """字节交换一个 16-bit 值。"""
+    return ((x & 0xFF) << 8) | ((x >> 8) & 0xFF)
+
+
+def fp16_block_to_values(block_lo: int, block_hi: int, order: str = "py") -> list:
     """
     Convert 2 blocks (512-bit each) → 64 FP16 values.
     block_lo: lower 512 bits → values 0..31
     block_hi: upper 512 bits → values 32..63
+
+    order: 'py'  = Python write_fp16_mem 字节序 (高字节在前, j=0 在右)
+           'cpp' = C++ write_mem_file 字节序 (低字节在前, j=0 在左)
     """
     values = []
     for blk in (block_lo, block_hi):
-        for j in range(32):
-            val = (blk >> (j * 16)) & 0xFFFF
-            values.append(val)
+        tmp = [(blk >> (j * 16)) & 0xFFFF for j in range(32)]
+        if order == "cpp":
+            tmp = [_swap16(v) for v in tmp[::-1]]
+        values.extend(tmp)
     return values
 
 
-def fp16_values_to_blocks(values: list) -> tuple:
-    """Convert 64 FP16 values → 2 blocks (512-bit each)."""
+def fp16_values_to_blocks(values: list, order: str = "py") -> tuple:
+    """Convert 64 FP16 values → 2 blocks (512-bit each), same byte order as input."""
+    vals = list(values)
+    if order == "cpp":
+        lo = [_swap16(int(v) & 0xFFFF) for v in vals[0:32]][::-1]
+        hi = [_swap16(int(v) & 0xFFFF) for v in vals[32:64]][::-1]
+    else:
+        lo = [int(v) & 0xFFFF for v in vals[0:32]]
+        hi = [int(v) & 0xFFFF for v in vals[32:64]]
     block_lo = 0
     block_hi = 0
-    for i, v in enumerate(values):
-        if i < 32:
-            block_lo |= (int(v) & 0xFFFF) << (i * 16)
-        else:
-            block_hi |= (int(v) & 0xFFFF) << ((i - 32) * 16)
+    for i, v in enumerate(lo):
+        block_lo |= v << (i * 16)
+    for i, v in enumerate(hi):
+        block_hi |= v << (i * 16)
     return block_lo, block_hi
 
 
@@ -78,13 +93,16 @@ def verify_fp16(input_file: str, output_file: str):
         print(f"ERROR: FP16 mode expects even number of blocks, got {n_blocks}")
         sys.exit(1)
 
+    order = detect_mem_order(input_file)
+    print(f"  Input byte order: {order}")
+
     expected = []
     for it in range(n_blocks // 2):
         blk_lo = blocks[it * 2]
         blk_hi = blocks[it * 2 + 1]
-        in_vals = fp16_block_to_values(blk_lo, blk_hi)
+        in_vals = fp16_block_to_values(blk_lo, blk_hi, order)
         out_vals = fwht_fp16(in_vals)
-        out_lo, out_hi = fp16_values_to_blocks(out_vals)
+        out_lo, out_hi = fp16_values_to_blocks(out_vals, order)
         expected.append(out_lo)
         expected.append(out_hi)
 

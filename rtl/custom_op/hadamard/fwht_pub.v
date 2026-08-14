@@ -115,14 +115,17 @@ module fwht_pub #(
 
     // man: FP16=implicit1+10bit尾数(低位对齐), INT16=13bit幅值(低位对齐)
     //      两者打包进 MAN_W+1=14-bit 容器, 高位填0
+    // 修复: subnormal (exp==0) flush-to-zero —— subnormal 真实指数为 -14,
+    //   硬件按 exp=0 参与对齐会错 14 位, 特定数据组合下产生错误输出 (±640 级)。
+    //   subnormal 值 ~1e-5, FTZ 对 FWHT 结果影响可忽略。
     assign man_a = cal_percision
         ? ((exp_a != 0) ? { {(MAN_W-FP16_MW){1'b0}}, 1'b1, op_a[FP16_MW-1:0] }
-                        : { {(MAN_W-FP16_MW+1){1'b0}}, op_a[FP16_MW-1:0] })
+                        : {(MAN_W+1){1'b0}})
         : {1'b0, man_a_int16_abs};
 
     assign man_b = cal_percision
         ? ((exp_b != 0) ? { {(MAN_W-FP16_MW){1'b0}}, 1'b1, op_b[FP16_MW-1:0] }
-                        : { {(MAN_W-FP16_MW+1){1'b0}}, op_b[FP16_MW-1:0] })
+                        : {(MAN_W+1){1'b0}})
         : {1'b0, man_b_int16_abs};
 
     // =========================================================================

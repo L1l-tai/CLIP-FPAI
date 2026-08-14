@@ -14,21 +14,19 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'soft-verification'))
-from fwht_golden import fp16_to_float
+from fwht_golden import read_fp16_mem
 
 VEC_DIM, GROUP_SIZE = 768, 64
 
 
 def read_mem(path):
-    data = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line and len(line) == 128:
-                blk = int(line, 16)
-                for j in range(32):
-                    data.append((blk >> (16 * j)) & 0xFFFF)
-    return [fp16_to_float(x) for x in data]
+    """读取 .mem 文件为 float 列表。
+
+    注意: 板上输出 (fwht_test.cpp write_mem_file) 与 RTL 仿真/golden
+    (write_fp16_mem) 的字节序约定相反。这里复用 fwht_golden.read_fp16_mem
+    自动检测字节序, 避免把有限值误读成 inf/NaN。
+    """
+    return read_fp16_mem(path)
 
 
 def plot_input_waveform(ax, data, title):

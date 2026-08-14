@@ -46,8 +46,9 @@ static uint16_t float_to_fp16(float x) {
     }
     if (e >= 31) return sign | 0x7C00;  // overflow
 
-    int frac = (int)(mant * 2048.0f) & 0x7FF;  // 11 bits with extra
-    frac = (frac + 1) >> 1;  // round to nearest, 10 bits
+    // frac = (2*mant - 1) * 1024, 10-bit 尾数 (mant in [0.5,1) -> frac in [0,1023])
+    // 注意: 不能用 (mant*2048)&0x7FF 再 >>1 —— 那是 round(mant*1024), 缺 -1024 偏置, 值会系统性放大
+    int frac = (int)(mant * 2048.0f + 0.5f) - 1024;   // round-to-nearest
     if (frac >= 1024) { e++; frac = 0; }  // carry
 
     return sign | ((e & 0x1F) << 10) | (frac & 0x3FF);
@@ -89,15 +90,15 @@ static std::vector<uint16_t> generate_768x30_outlier_data(int seed = 42) {
 // ---- Pack FP16 values to 512-bit blocks (RTL DDR byte order) ----
 static void pack_to_blocks(const std::vector<uint16_t>& data, int8_t* buf, int num_blocks) {
     // Each block = 64 bytes = 32 FP16 values
-    // Byte order: fwht_regs[j] = {bytearray[62-j*2], bytearray[63-j*2]}
+    // 修复: 小端布局, fwht_regs[j] = din[16j+15:16j] 直接匹配 (buf[2j]=lo, buf[2j+1]=hi)
     for (int b = 0; b < num_blocks; b++) {
         for (int j = 0; j < 32; j++) {
             int idx = b * 32 + j;
             uint16_t fp16 = (idx < (int)data.size()) ? data[idx] : 0;
-            int hi = 62 - j * 2;
-            int lo = 63 - j * 2;
-            buf[b * 64 + hi] = (fp16 >> 8) & 0xFF;
-            buf[b * 64 + lo] = fp16 & 0xFF;
+            // 修复: 小端布局 (低字节在 2j, 高字节在 2j+1), 与硬件 lane 提取
+            //   fwht_regs[i] = din[16i+15:16i] 匹配; 旧版 62-2j 大端导致字节交换+错位。
+            buf[b * 64 + j * 2]     = fp16 & 0xFF;
+            buf[b * 64 + j * 2 + 1] = (fp16 >> 8) & 0xFF;
         }
     }
 }
@@ -132,9 +133,26 @@ int main(int argc, char *argv[])
     const int TOTAL_BLOCKS = TOTAL_ELEMS / 32;       // 720 (FP16, 32值/块)
     const int CAL_PRECISION = 1;  // FP16
 
-    std::cout << "Generating " << NUM_VECTORS << "x" << VEC_DIM
-              << " outlier data (" << TOTAL_BLOCKS << " blocks)..." << std::endl;
-    auto fp16_data = generate_768x30_outlier_data(42);
+    // 支持外部输入: ./fwht_test [input.mem]  (用 clip 真实数据/渐进缩放数据测试硬件数值范围)
+    //   无参数时用内置 outlier 数据 (generate_768x30_outlier_data(42))
+    std::vector<int8_t> src_buf_loaded;
+    if (argc >= 2) {
+        std::cout << "Loading input from " << argv[1] << " ..." << std::endl;
+        int src_data_size2 = TOTAL_BLOCKS * 64;
+        src_buf_loaded.resize(src_data_size2, 0);
+        int n = read_mem_file(argv[1], src_buf_loaded.data(), src_data_size2);
+        if (n != src_data_size2) {
+            std::cerr << "ERROR: input size " << n << " != " << src_data_size2 << std::endl;
+            return -1;
+        }
+        std::cout << "  Loaded " << n << " bytes from " << argv[1] << std::endl;
+    } else {
+        std::cout << "Generating " << NUM_VECTORS << "x" << VEC_DIM
+                  << " outlier data (" << TOTAL_BLOCKS << " blocks)..." << std::endl;
+        auto fp16_data = generate_768x30_outlier_data(42);
+        src_buf_loaded.resize(TOTAL_BLOCKS * 64, 0);
+        pack_to_blocks(fp16_data, src_buf_loaded.data(), TOTAL_BLOCKS);
+    }
 
     int src_data_size = TOTAL_BLOCKS * 64;   // 46080 bytes
     int dst_data_size = TOTAL_BLOCKS * 64;   // 46080 bytes
@@ -147,11 +165,10 @@ int main(int argc, char *argv[])
     int dst_offset = src_offset + src_data_size + pad_size;
     int total_size = dst_offset + dst_data_size + pad_size;
 
-    std::vector<int8_t> src_buf(src_data_size, 0);
-    pack_to_blocks(fp16_data, src_buf.data(), TOTAL_BLOCKS);
+    std::vector<int8_t>& src_buf = src_buf_loaded;
     // 同步写入 .mem 供仿真使用
     write_mem_file("test/input-data/fwht-input-768x30.mem", src_buf.data(), src_data_size);
-    std::cout << "Generated " << src_data_size << " bytes source data" << std::endl;
+    std::cout << "Source data size: " << src_data_size << " bytes" << std::endl;
 
     auto mem_chunk = fpai_device.defaultMemRegion().malloc(total_size, 0, 64);
     uint32_t mem_addr = mem_chunk->begin.addr();

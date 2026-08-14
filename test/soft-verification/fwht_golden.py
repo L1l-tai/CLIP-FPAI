@@ -284,6 +284,88 @@ def write_fp16_mem(data: list, filepath: str, values_per_block: int = 32):
 
 
 # =========================================================================
+# .mem 文件字节序工具
+# -------------------------------------------------------------------------
+# 项目内 .mem 存在两种互不兼容的字节序约定:
+#   'py'  (write_fp16_mem / generate_input.py):  高字节在前, 块内 j=0 在右
+#         -> 服务 RTL 仿真链路 ($readmemh 语义), 禁止改动
+#   'cpp' (C++ write_mem_file / img2mem.py):     低字节在前, 块内 j=0 在左
+#         -> 服务上板链路 (fwht_test 输出 fwht-output-board.mem 等)
+# 读取方必须按文件实际字节序解析, 否则会把有限值误读成 inf/NaN。
+# =========================================================================
+
+def _swap16(x: int) -> int:
+    """字节交换一个 16-bit 值 (低字节 <-> 高字节)。"""
+    return ((x & 0xFF) << 8) | ((x >> 8) & 0xFF)
+
+
+def _parse_fp16_cpp(lines: list) -> list:
+    """按 C++ write_mem_file 格式解析: 每 4-hex 一组低字节在前, j=0 在左。"""
+    data = []
+    for line in lines:
+        for j in range(32):
+            u = int(line[j * 4:(j + 1) * 4], 16)
+            data.append(_swap16(u))
+    return data
+
+
+def _parse_fp16_py(lines: list) -> list:
+    """按 Python write_fp16_mem 格式解析: 高字节在前, 块内 j=0 在右。"""
+    data = []
+    for line in lines:
+        blk = int(line, 16)
+        for j in range(32):
+            data.append((blk >> (16 * j)) & 0xFFFF)
+    return data
+
+
+def detect_mem_order(path: str) -> str:
+    """检测 .mem 文件字节序: 返回 'cpp' 或 'py'。
+
+    启发式: FWHT 激活数据应为有限值, 正确字节序不会产生 inf/NaN;
+    错误字节序会把部分有限位模式误读成 exp=31 (inf/NaN)。
+    若两种解析都不产生 inf/NaN (极端情况), 取非有限值更少的。
+    """
+    lines = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line and len(line) == 128:
+                lines.append(line)
+    if not lines:
+        raise ValueError(f"Empty or unrecognized .mem file: {path}")
+
+    def bad_count(parser):
+        return sum(1 for v in [fp16_to_float(x) for x in parser(lines)]
+                   if v != v or v in (float('inf'), float('-inf')))
+
+    n_cpp = bad_count(_parse_fp16_cpp)
+    n_py = bad_count(_parse_fp16_py)
+    order = "cpp" if n_cpp <= n_py else "py"
+    if n_cpp != n_py:
+        print(f"  [mem-order] {path.split('/')[-1]}: cpp_bad={n_cpp} py_bad={n_py} -> {order}")
+    return order
+
+
+def read_fp16_mem(path: str) -> list:
+    """读取 .mem 文件为 float 列表 (自动检测字节序)。"""
+    return [fp16_to_float(x) for x in read_fp16_mem_raw(path)]
+
+
+def read_fp16_mem_raw(path: str) -> list:
+    """读取 .mem 文件为 FP16 原始 16-bit 整数列表 (自动检测字节序)。"""
+    order = detect_mem_order(path)
+    lines = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line and len(line) == 128:
+                lines.append(line)
+    parser = _parse_fp16_cpp if order == "cpp" else _parse_fp16_py
+    return parser(lines)
+
+
+# =========================================================================
 # INT8 golden path
 # =========================================================================
 
