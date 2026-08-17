@@ -1,0 +1,58 @@
+# =====================================================================
+# seg_pre 编译配置 —— pixel_values -> [残差, LN1]
+#   输入:NHWC [1,224,224,3] FP32(NHWC 改造版 onnx,内部 Transpose 成 NCHW)
+#   不做 NPU 归一化(cpp 侧 CPU 已归一化,沿用 clip_dual_cfg)
+#   qdtype=bf16(CLIP 极端值必须,tf32/fp16 会溢出成 inf —— 文本编码器血泪坑)
+# =====================================================================
+
+[parse]
+net_name = "vit_seg_pre"
+framework = "onnx"
+inputs = [ 1, 224, 224, 3 ]                    # NHWC(图像输入)
+inputs_layout = "NHWC"                         # Icraft 图像输入必须 NHWC
+inputs_dtype = "FP32"                          # 不做 NPU 归一化
+pre_method = "nop"                             # 全字符串 nop,避免 "pre_mean only supported when NHWC"
+pre_scale = "nop"
+pre_mean = "nop"
+channel_swap = "nop"
+network = "../../fmodel/vision/split/vit_seg_pre_fixed.onnx"   # NCHW 原版; toml 写 NHWC 只是 Icraft 布局声明(勿手动加 Transpose, 见 KB 血泪坑5)
+jr_path = "imodel/vit_seg_pre/"  # 输出到项目 imodel/
+target = "zhuge"
+
+[optimize]
+target = "zhuge"
+json = "imodel/vit_seg_pre/vit_seg_pre_parsed.json"
+raw  = "imodel/vit_seg_pre/vit_seg_pre_parsed.raw"
+log_path = "./imodel/optimize"
+jr_path = "imodel/vit_seg_pre/"  # 输出到项目 imodel/
+
+[quantize]
+qdtype = "bf16"                                # tf32 -> bf16
+forward_dir = "fake_path"                      # bf16 时校准集非必配,沿用文本中间段做法
+forward_list = "fake_path"
+json = "imodel/vit_seg_pre/vit_seg_pre_optimized.json"
+raw  = "imodel/vit_seg_pre/vit_seg_pre_optimized.raw"
+jr_path = "imodel/vit_seg_pre/"  # 输出到项目 imodel/
+per = "channel"
+target = "zhuge"
+
+[adapt]
+target = "zhuge"
+json = "imodel/vit_seg_pre/vit_seg_pre_quantized.json"
+raw  = "imodel/vit_seg_pre/vit_seg_pre_quantized.raw"
+jr_path = "imodel/vit_seg_pre/"  # 输出到项目 imodel/
+
+[generate]
+json = "imodel/vit_seg_pre/vit_seg_pre_adapted.json"
+raw  = "imodel/vit_seg_pre/vit_seg_pre_adapted.raw"
+jr_path = "imodel/vit_seg_pre/"  # 输出到项目 imodel/
+
+[run]
+log_time = true
+log_io = true
+dump_format = "SFT"
+json = "imodel/ZG/vit_seg_pre_ZG.json"
+raw  = "imodel/ZG/vit_seg_pre_ZG.raw"
+input = "board_data/vit_pre_in.bin"            # [1,224,224,3] FP32 bin;若 run 报错可跳过(实际用自己的 cpp)
+log_path = "./logs/"
+backends = "ZG330,axi://zg330aiu?npu=0x40000000&dma=0x80000000;"

@@ -42,7 +42,6 @@ set(TARGET_NAMES
 	clip_app
 	clip_app_web
 	clip_search_all
-	fmt_cvt_test
 	clip_warmup
 	clip_vit_hadamard_split
 	clip_app_split
@@ -85,10 +84,10 @@ add_link_options("$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/OPT:REF>")
 add_link_options("$<$<AND:$<C_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/OPT:ICF>")
 add_link_options("$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/OPT:ICF>")
 
-# 依赖目录: fpai_demo_app/deps (相对本 CMakeLists 所在目录 compile/ 的路径)
+# 依赖目录: 项目 deploy/deps (modelzoo_utils + thirdparty, 已并入项目)
 # 可用环境变量 DEPS_DIR 覆盖 (如板卡 SDK 部署到其他位置时)
 if(NOT DEFINED DEPS_DIR)
-	set(DEPS_DIR ../../fpai_demo_app/deps)
+	set(DEPS_DIR ../deploy/deps)
 endif()
 
 set(THIRDPARTY_INCLUDES
@@ -167,8 +166,7 @@ foreach(TARGET_NAME ${TARGET_NAMES})
 		# gather/fwht/resize test share mem_file_utils
 		if(TARGET_NAME STREQUAL "gather_test" OR
 		   TARGET_NAME STREQUAL "fwht_test" OR
-		   TARGET_NAME STREQUAL "resize_test" OR
-		   TARGET_NAME STREQUAL "fmt_cvt_test" )
+		   TARGET_NAME STREQUAL "resize_test" )
 			list(APPEND APP_SOURCES_${TARGET_NAME} ../deploy/src/mem_file_utils.cpp)
 		endif()
 

@@ -21,11 +21,13 @@
 
 ## 编译
 
-将 `op-func/*.cpp` 加入 CMakeLists.txt：
+本目录位于 `deploy/src/op-func/`（源文件唯一来源），板端程序通过
+`#include "./op-func/op_xxx.h"` 相对包含，由 compile/ 的 CMake 自动编译，
+无需手动 GLOB 添加。
 
 ```cmake
-file(GLOB OP_FUNC_SRC "test/op-func/*.cpp")
-add_executable(my_app my_app.cpp ${OP_FUNC_SRC})
+# (compile/CMakeLists.txt 已自动引用 deploy/src/ 下所有注册目标,
+#  op-func 通过源文件内相对 include 参与编译)
 ```
 
 ## FWHT 示例
