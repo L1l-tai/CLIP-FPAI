@@ -71,11 +71,6 @@ using namespace fpai;
 
 const int DIM = 512;
 
-// ★多线程并发安全:
-//   g_hw_mutex   — 0x400C0000 寄存器区互斥 (Gather/FWHT/Resize 共用 reg_ctrl)
-//   g_reset_mutex— device.reset(1) 与 text forward 互斥 (reset 是设备级, 会破坏并发 forward)
-static std::mutex g_hw_mutex;
-static std::mutex g_reset_mutex;
 
 // ============================================================
 // 通用工具
@@ -159,14 +154,17 @@ static double run_hadamard_768(FPAIDevice& fpai_device, uint32_t reg_base,
             src_buf[b*64 + j*2 + 1] = (hf >> 8) & 0xFF;
         }
 
-    // ★chunk DMA (write) 不在锁内: u-dma-buf 可能永久阻塞, 不能连带锁死 text 线程的 Gather
-    chunk.write(src_off, (char*)src_buf.data(), src_size);
-    uint32_t fwht_cycles = 0;   // 锁内读 CYCLE 后传出
-
-    // ★FWHT 寄存器段加锁 (与 Gather/Resize 共用 0x400C0000 reg_ctrl), 作用域块限定锁范围
+    // ★串行模式: 无锁 (文本编码与图像推理同线程)
+    uint32_t fwht_cycles = 0;
     {
         auto& reg = fpai_device.defaultRegRegion();
-        std::lock_guard<std::mutex> hlk(g_hw_mutex);
+        // ★预分配复用: 避免每帧 76KB×2 堆分配 (堆碎片积累是长时间卡顿候选源)
+        static std::vector<int8_t> src_buf_cache, dst_buf_cache;
+        if (src_buf_cache.size() != (size_t)src_size) { src_buf_cache.resize(src_size); dst_buf_cache.resize(dst_size); }
+        std::vector<int8_t>& src_buf = src_buf_cache;
+        std::vector<int8_t>& dst_buf = dst_buf_cache;
+        chunk.write(src_off, (char*)src_buf.data(), src_size);
+
         // 复位: 寄存器顺序写, 写后读回作 AXI 同步屏障 (确保复位写已到达 FPGA 再 START,
         // 避免 START 与复位释放的时序竞争导致 DONE 偶发不置位)
         reg.write(REG_RESET, 1, false);   // FPGA 算子侧复位
@@ -180,25 +178,37 @@ static double run_hadamard_768(FPAIDevice& fpai_device, uint32_t reg_base,
         reg.write(REG_WRSIZE, TOTAL_BLOCKS, false);      // 总 block 数
         reg.write(REG_START, 1, false);
 
-        auto t0 = system_clock::now(); int done = 0;
-        while (!done) {
-            done = reg.read(REG_DONE, false);
-            if (duration_cast<milliseconds>(system_clock::now() - t0).count() > 2000) {
-                std::cerr << "[FWHT] timeout (2s)" << std::endl; return 0.0;
+        // ★偶发挂起自愈: 2s 超时后硬复位 + 重试一次 (清 FWHT 状态, 防 buffer 锁连累下帧)
+        bool fwht_retried = false;
+        for (;;) {
+            auto t0 = system_clock::now(); int done = 0;
+            while (!done) {
+                done = reg.read(REG_DONE, false);
+                if (duration_cast<milliseconds>(system_clock::now() - t0).count() > 2000) break;
             }
+            if (done) break;
+            std::cerr << "[FWHT] timeout, retry once" << std::endl;
+            if (fwht_retried) return 0.0;   // 仍超时: 丢帧
+            fwht_retried = true;
+            // 硬复位: 彻底清 FWHT 状态机, 释放可能的 buffer 占用
+            reg.write(REG_RESET, 1, false);
+            reg.read(REG_RESET, false);
+            reg.write(REG_RESET, 0, false);
+            reg.read(REG_RESET, false);
+            // 重新写源数据 + 重新启动
+            chunk.write(src_off, (char*)src_buf.data(), src_size);
+            reg.write(REG_START, 1, false);
         }
-        // CYCLE 读取在锁内完成 (寄存器读)
         fwht_cycles = reg.read(REG_CYCLE, false);
-    }   // ★锁在此释放, chunk.read (DMA) 在锁外
 
-    std::vector<int8_t> dst_buf(dst_size);
-    chunk.read((char*)dst_buf.data(), dst_off, dst_size);
-    for (int b = 0; b < TOTAL_BLOCKS; b++)
-        for (int j = 0; j < 32; j++) {
-            uint16_t hf = ((uint8_t)dst_buf[b*64 + j*2 + 1] << 8) |
-                           (uint8_t)dst_buf[b*64 + j*2];   // 小端解包, 与打包对称
-            out[b*32 + j] = fp16_to_float(hf);
-        }
+        chunk.read((char*)dst_buf.data(), dst_off, dst_size);
+        for (int b = 0; b < TOTAL_BLOCKS; b++)
+            for (int j = 0; j < 32; j++) {
+                uint16_t hf = ((uint8_t)dst_buf[b*64 + j*2 + 1] << 8) |
+                               (uint8_t)dst_buf[b*64 + j*2];   // 小端解包, 与打包对称
+                out[b*32 + j] = fp16_to_float(hf);
+            }
+    }   // ★锁全段结束
 
     // 硬件执行耗时 = cycles / 200MHz (板上展示口径, 不含 host 打包/DMA)
     uint32_t cyc = fwht_cycles;   // 锁内已读 (见上)
@@ -244,8 +254,20 @@ static std::vector<float> encode_text(
     int indices_beats = 1, indices_size = indices_beats * 64;
     int elem_size = DATA_WIDTH_BEATS * 64, src_data_size = SEQ * elem_size;
 
-    auto token_emb = read_float_bin(data_dir + "token_emb.bin", (size_t)VOCAB * DIM);
-    auto pos_emb   = read_float_bin(data_dir + "pos_emb.bin",   (size_t)SEQ * DIM);
+    // ★缓存: token_emb(100MB)/pos_emb 只读一次, 避免每次 add 反复分配/IO
+    //   (多次 add 后堆碎片 + IO 延迟是"运行时间长后偶发卡顿"的主要积累源)
+    std::vector<float> token_emb, pos_emb;
+    {
+        static std::vector<float> cached_token_emb, cached_pos_emb;
+        static std::string cached_dir;
+        if (cached_token_emb.empty() || cached_dir != data_dir) {
+            cached_token_emb = read_float_bin(data_dir + "token_emb.bin", (size_t)VOCAB * DIM);
+            cached_pos_emb   = read_float_bin(data_dir + "pos_emb.bin",   (size_t)SEQ * DIM);
+            cached_dir = data_dir;
+        }
+        token_emb = cached_token_emb;
+        pos_emb   = cached_pos_emb;
+    }
     if (token_emb.empty() || input_ids.empty()) {
         std::cerr << "[TEXT] token_emb 读取失败或 input_ids 空: token_emb=" << token_emb.size()
                   << " ids=" << input_ids.size() << std::endl;
@@ -269,11 +291,15 @@ static std::vector<float> encode_text(
         if (input_ids[i] > maxv) { maxv = input_ids[i]; eot_idx = i; }
     }
 
-    // ★去掉 warm forward: text 只做一次 real forward, 减少 NPU 任务流 (降低会话冲突面)
-    Tensor in_real = data2Tensor(mid_in.data(), text_network.inputs()[0]);
+    // ★text 每次 warm + reset (照 web 版行为): 清 text 状态残留 (串行无并发)
+    {
+        Tensor in_warm = data2Tensor(mid_in.data(), text_network.inputs()[0]);
+        auto warm = text_session.forward({in_warm});
+        for (auto& t : warm) t.waitForReady(std::chrono::milliseconds(5000));
+        device.reset(1);   // ★warm 后 reset
+    }
 
-    // ★text forward 全程持有 g_reset_mutex (主线程 device.reset 等待; 防 reset 破坏并发 forward)
-    std::unique_lock<std::mutex> rlk(g_reset_mutex);
+    Tensor in_real = data2Tensor(mid_in.data(), text_network.inputs()[0]);
     auto out = text_session.forward({in_real});
     bool txt_ok = true;
     for (auto& t : out) txt_ok = txt_ok && t.waitForReady(std::chrono::milliseconds(2000));
@@ -284,7 +310,9 @@ static std::vector<float> encode_text(
         device.reset(1);
         return {};
     }
-    rlk.unlock();   // text forward 完成, 释放 reset 互斥
+    device.reset(1);   // ★real 后 reset
+    // ★文本编码后固定 10ms 延迟 (清 text NPU 状态残留, 稳定后续图像推理)
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
     auto out_host = out[0].to(HostDevice::MemRegion());
     const float* feat_seq = (const float*)out_host.data().cptr();
@@ -292,7 +320,7 @@ static std::vector<float> encode_text(
 
     auto& reg = fpai_device.defaultRegRegion();
     uint32_t GATHER_BASE = 0x400C0000;
-    // ★chunk DMA (write) 不在锁内: u-dma-buf 可能永久阻塞, 不能连带锁死主线程的 FWHT/resize
+    // ★串行模式: 无锁
     std::vector<int8_t> idx_buf(indices_size, 0);
     idx_buf[0] = eot_idx & 0xFF; idx_buf[1] = (eot_idx>>8)&0xFF;
     idx_buf[2] = (eot_idx>>16)&0xFF; idx_buf[3] = (eot_idx>>24)&0xFF;
@@ -301,8 +329,6 @@ static std::vector<float> encode_text(
     gather_chunk.write(0, (char*)idx_buf.data(), indices_size);
     gather_chunk.write(indices_size + 4096, (char*)feat_bytes, src_data_size);
 
-    // ★Gather 寄存器段加锁 (与 FWHT/Resize 共用 0x400C0000 reg_ctrl)
-    std::lock_guard<std::mutex> hlk(g_hw_mutex);
     reg.write(GATHER_BASE + 0x1DC, 1, false); std::this_thread::sleep_for(std::chrono::milliseconds(10));
     reg.write(GATHER_BASE + 0x1DC, 0, false); std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
@@ -326,10 +352,16 @@ static std::vector<float> encode_text(
     if (out_gather_us) *out_gather_us = reg.read(GATHER_BASE + 0x84, false) / 200.0;
 
     std::vector<float> eot_feat(DIM);
-    // ★chunk DMA (read) 在锁外: 避免 u-dma-buf 阻塞连带主线程
     gather_chunk.read((char*)eot_feat.data(), indices_size + 4096 + src_data_size + 4096, DIM * sizeof(float));
 
-    auto proj = read_float_bin(data_dir + "text_proj.bin", (size_t)DIM * DIM);
+    // ★缓存: text_proj 只读一次 (同上, 避免反复分配)
+    static std::vector<float> cached_proj;
+    static std::string cached_proj_dir;
+    if (cached_proj.empty() || cached_proj_dir != data_dir) {
+        cached_proj = read_float_bin(data_dir + "text_proj.bin", (size_t)DIM * DIM);
+        cached_proj_dir = data_dir;
+    }
+    auto proj = cached_proj;
     if (proj.empty()) {
         std::cerr << "[TEXT] text_proj.bin 读取失败" << std::endl;
         return {};
@@ -341,10 +373,6 @@ static std::vector<float> encode_text(
         text_feat[i] = s;
     }
     l2norm(text_feat);
-    // 监测: 每次文本编码后输出前 5 个值 (stdout, 与 Web 日志同流)
-    std::cout << "[TEXT] feat[:5] = " << std::fixed << std::setprecision(4)
-              << text_feat[0] << " " << text_feat[1] << " " << text_feat[2] << " "
-              << text_feat[3] << " " << text_feat[4] << std::endl;
     return text_feat;
 }
 
@@ -352,8 +380,13 @@ static std::vector<float> encode_text(
 // ============================================================
 // main
 // ============================================================
+// 全局 argv (供卡死时 exec 自重启)
+static char** g_argv = nullptr;
+static int g_argc = 0;
+
 int main(int argc, char* argv[])
 {
+    g_argc = argc; g_argv = argv;
     // subprocess 管道下 stdout 默认全缓冲, 会导致 [WEB] 行卡在缓冲里 server 收不到.
     // 设为行缓冲: 每遇 \n 立即 flush, printf 和 cout 都生效.
     setvbuf(stdout, NULL, _IOLBF, 0);
@@ -447,6 +480,39 @@ int main(int argc, char* argv[])
     std::mutex label_mutex;
     std::vector<std::string> labels;
     std::vector<std::vector<float>> label_feats;
+    std::atomic<int> frame_cnt{0};   // ★提前声明: FATAL 重启前保存帧数用
+    std::atomic<long> img_enc_count{0};   // ★提前声明 (同上)
+    bool restored_from_cache = false;
+    // ★FATAL 重启恢复: 从缓存读回 labels/label_feats/帧数 (跳过初始编码, 直接可用)
+    {
+        std::ifstream ifs_l(DATA_DIR + "label_cache.txt");
+        std::ifstream ifs_f(DATA_DIR + "label_feats_cache.bin", std::ios::binary);
+        std::ifstream ifs_s(DATA_DIR + "state_cache.txt");
+        if (ifs_l && ifs_f && ifs_s) {
+            std::string line;
+            while (std::getline(ifs_l, line)) {
+                if (!line.empty() && line.back()=='\r') line.pop_back();
+                if (line.empty()) continue;
+                std::vector<float> feat(DIM);
+                ifs_f.read((char*)feat.data(), DIM * sizeof(float));
+                if (ifs_f.gcount() == (std::streamsize)(DIM * sizeof(float))) {
+                    labels.push_back(line); label_feats.push_back(feat);
+                }
+            }
+            long fc = 0, ec = 0;
+            ifs_s >> fc >> ec;
+            frame_cnt.store((int)fc); img_enc_count.store(ec);
+            if (!labels.empty()) {
+                restored_from_cache = true;
+                std::cout << "[RESTORE] 从缓存恢复 " << labels.size() << " 标签, frame="
+                          << frame_cnt.load() << " enc=" << img_enc_count.load() << std::endl;
+                std::remove((DATA_DIR + "label_cache.txt").c_str());
+                std::remove((DATA_DIR + "label_feats_cache.bin").c_str());
+                std::remove((DATA_DIR + "state_cache.txt").c_str());
+            }
+        }
+    }
+    if (!restored_from_cache) {
     {
         std::vector<std::string> init;
         if (!LABELS_TXT.empty()) {
@@ -481,6 +547,21 @@ int main(int argc, char* argv[])
         }
         std::cout << "[main] 初始标签就绪: " << labels.size() << std::endl;
     }
+    }   // if (!restored_from_cache)
+    // ★FATAL 重启前保存状态 (labels/label_feats/帧数)
+    auto save_state = [&]() {
+        { std::lock_guard<std::mutex> lk(label_mutex);
+          { std::ofstream ofs(DATA_DIR + "label_cache.txt");
+            for (auto& l : labels) ofs << l << "\n"; }
+          { std::ofstream ofs(DATA_DIR + "label_feats_cache.bin", std::ios::binary);
+            for (auto& f : label_feats) ofs.write((const char*)f.data(), DIM * sizeof(float)); } }
+        { std::ofstream ofs(DATA_DIR + "state_cache.txt");
+          ofs << frame_cnt.load() << " " << img_enc_count.load() << "\n"; }
+        std::cout << "[SAVE] 状态已保存: " << labels.size() << " 标签, frame="
+                  << frame_cnt.load() << " enc=" << img_enc_count.load() << std::endl;
+        std::cout.flush();
+    };
+
     // labels/label_feats/label_mutex/tok 在上面声明, 后续 lambda 通过 [&] 捕获
 
     // ---------- 相机 + HDMI ----------
@@ -521,7 +602,6 @@ int main(int argc, char* argv[])
     std::atomic<double> txt_gather_us_sum{0};
     std::atomic<double> txt_gather_us_last{0};
     // 图像编码器: 累计帧数 + Resize 硬算子累计耗时(us) + 单帧总耗时
-    std::atomic<long> img_enc_count{0};
     std::atomic<double> img_resize_us_sum{0};
     std::atomic<double> img_resize_us_last{0};
     std::atomic<double> img_frame_ms_last{0};
@@ -537,9 +617,10 @@ int main(int argc, char* argv[])
     // resize 输出 → CPU归一化 → seg_pre NPU → FWHT 硬算子 → seg_post NPU → emb
     // out_fwd_ms: 返回 pre+post NPU forward 总耗时(ms)
     auto resize_out_to_emb = [&](double* out_fwd_ms = nullptr) -> std::vector<float> {
-        std::vector<uint8_t> rs_out(DST_SZ*DST_SZ*4);
+        // ★预分配复用: 避免每帧 200KB+150KB 堆分配
+        static std::vector<uint8_t> rs_out(DST_SZ*DST_SZ*4);
+        static std::vector<float> fp32_rgb(DST_SZ*DST_SZ*3);
         rs_dst.read((char*)rs_out.data(), 0, DST_SZ*DST_SZ*4);
-        std::vector<float> fp32_rgb(DST_SZ*DST_SZ*3);
         for (int i = 0; i < DST_SZ*DST_SZ; i++) {
             uint32_t w = ((uint32_t*)rs_out.data())[i];
             fp32_rgb[i*3+0] = ((float)((w>>16)&0xFF)/255.f - mean_c[2]) / std_c[2];  // B
@@ -551,15 +632,18 @@ int main(int argc, char* argv[])
         Tensor t = CvMat2Tensor(imgf, pre_network, std::make_tuple(DST_SZ, DST_SZ, 3));
         auto _t_fwd = system_clock::now();
 
+        // ★串行模式: 无锁
         auto pre_out = pre_session.forward({t});
         bool pre_ok = true;
         for (auto& ot : pre_out) pre_ok = pre_ok && ot.waitForReady(std::chrono::milliseconds(2000));
 
         if (!pre_ok) {
-            // NPU 偶发挂起自愈: 丢本帧, reset 后继续 (避免 30s 卡顿)
-            std::cout << "[WARN] seg_pre not ready, skip frame" << std::endl;
-            { std::lock_guard<std::mutex> rlk2(g_reset_mutex); device.reset(1); }
-            return {};
+            // ★单次超时即重启: reset 不能自愈, 全新状态恢复 (一次性 exec)
+            std::cout << "[FATAL] seg_pre not ready, 程序重启" << std::endl;
+            save_state();   // ★保存状态供重启后恢复
+            std::cout.flush();
+            execv("/proc/self/exe", g_argv);
+            _exit(1);   // exec 失败兜底
         }
         auto res_host = pre_out[0].to(HostDevice::MemRegion());
         auto ln1_host = pre_out[1].to(HostDevice::MemRegion());
@@ -587,10 +671,12 @@ int main(int argc, char* argv[])
         for (auto& ot : post_out) post_ok = post_ok && ot.waitForReady(std::chrono::milliseconds(2000));
 
         if (!post_ok) {
-            // NPU 偶发挂起自愈: 丢本帧, reset 后继续 (避免 30s 卡顿)
-            std::cout << "[WARN] seg_post not ready, skip frame" << std::endl;
-            { std::lock_guard<std::mutex> rlk2(g_reset_mutex); device.reset(1); }
-            return {};
+            // ★单次超时即重启: 全新状态恢复
+            std::cout << "[FATAL] seg_post not ready, 程序重启" << std::endl;
+            save_state();   // ★保存状态供重启后恢复
+            std::cout.flush();
+            execv("/proc/self/exe", g_argv);
+            _exit(1);   // exec 失败兜底
         }
         double fwd_ms = duration_cast<microseconds>(system_clock::now() - _t_fwd).count() / 1000.0;
         if (out_fwd_ms) *out_fwd_ms = fwd_ms;
@@ -598,9 +684,8 @@ int main(int argc, char* argv[])
         std::vector<float> emb((const float*)emb_t.data().cptr(),
                                (const float*)emb_t.data().cptr()+DIM);
         l2norm(emb);
-
-        { std::lock_guard<std::mutex> rlk2(g_reset_mutex); device.reset(1); }
-
+        // ★post 后 reset (pre 不 reset, post reset — 每帧最后 NPU 操作后清理)
+        device.reset(1);
         return emb;
     };
     // 摄像头帧 → emb
@@ -609,9 +694,10 @@ int main(int argc, char* argv[])
         vision_busy.store(true);
         auto _t_start = system_clock::now();
         runImageMakeForward(fpai_device, 0, NET_W, NET_H, 3, imk_addr, 8);
-        std::vector<uint8_t> imk(NET_W*NET_H*3);
+        // ★预分配复用: 避免每帧 0.9MB+1.2MB 堆分配
+        static std::vector<uint8_t> imk(NET_W*NET_H*3);
+        static std::vector<uint32_t> padded(NET_W*NET_H);
         imk_mem.read((char*)imk.data(), 0, NET_W*NET_H*3);
-        std::vector<uint32_t> padded(NET_W*NET_H);
         for (int i = 0; i < NET_W*NET_H; i++)
             padded[i] = (uint32_t)imk[i*3+2]<<16 | (uint32_t)imk[i*3+1]<<8 | imk[i*3+0];
         rs_src.write(0, (char*)padded.data(), NET_W*NET_H*4);
@@ -620,8 +706,7 @@ int main(int argc, char* argv[])
         rcfg.src_w=NET_W; rcfg.src_h=NET_H; rcfg.dst_w=DST_SZ; rcfg.dst_h=DST_SZ; rcfg.crop_enable=1;
         uint32_t rs_cycles = 0;
         bool rs_ok;
-        { std::lock_guard<std::mutex> hlk2(g_hw_mutex);
-          rs_ok = op_resize_run(&fpai_device, 0x400C0000, rcfg, 2000, &rs_cycles); }
+        rs_ok = op_resize_run(&fpai_device, 0x400C0000, rcfg, 2000, &rs_cycles);
         if (!rs_ok) {
             img_period_ms_last.store(duration_cast<microseconds>(system_clock::now() - _t_full).count() / 1000.0);
             vision_busy.store(false);
@@ -660,8 +745,7 @@ int main(int argc, char* argv[])
         rcfg.src_w=NET_W; rcfg.src_h=NET_H; rcfg.dst_w=DST_SZ; rcfg.dst_h=DST_SZ; rcfg.crop_enable=1;
         uint32_t rs_cycles2 = 0;
         bool rs_ok2;
-        { std::lock_guard<std::mutex> hlk3(g_hw_mutex);
-          rs_ok2 = op_resize_run(&fpai_device, 0x400C0000, rcfg, 2000, &rs_cycles2); }
+        rs_ok2 = op_resize_run(&fpai_device, 0x400C0000, rcfg, 2000, &rs_cycles2);
         if (!rs_ok2) {
             img_period_ms_last.store(duration_cast<microseconds>(system_clock::now() - _t_full).count() / 1000.0);
             vision_busy.store(false);
@@ -686,7 +770,11 @@ int main(int argc, char* argv[])
     // ============================================================
     enum AppMode { M_IDLE, M_DUAL, M_SEARCH };
     std::atomic<int> app_mode{ M_IDLE };
-    std::atomic<int> frame_cnt{0};
+    // ★恢复后直接进入 dual mode (分类立即继续)
+    if (restored_from_cache) {
+        app_mode.store(M_DUAL);
+        std::cout << "[RESTORE] 直接进入 dual mode" << std::endl;
+    }
     std::atomic<bool> imk_armed{false};
 
 
@@ -727,67 +815,23 @@ int main(int argc, char* argv[])
                   << " fwht_avg_us=" << std::fixed << std::setprecision(1) << avg_fw
                   << " count=" << c << std::endl;
     };
-    // ★text 编码工作线程: 独立 NPU 执行流 (与主线程 pre/post 并行, 避免三会话交替切换冲突)
-    struct TextReq {
-        std::string prompt;
-        std::vector<int32_t> ids;
-        std::mutex mtx;
-        std::condition_variable cv;
-        bool done = false;
-        std::vector<float> feat;
-    };
-    std::mutex req_mutex;
-    std::condition_variable req_cv;
-    std::deque<std::shared_ptr<TextReq>> req_queue;
-    std::atomic<bool> text_worker_run{true};
-    auto text_worker_fn = [&]() {
-        while (text_worker_run.load() || !req_queue.empty()) {
-            std::shared_ptr<TextReq> req;
-            {
-                std::unique_lock<std::mutex> lk(req_mutex);
-                req_cv.wait(lk, [&]{ return !req_queue.empty() || !text_worker_run.load(); });
-                if (req_queue.empty() && !text_worker_run.load()) break;
-                req = req_queue.front(); req_queue.pop_front();
-            }
-            double gus = 0;
-            auto feat = encode_text(req->ids, DATA_DIR, device, text_session, text_network,
-                                    fpai_device, gather_chunk, idx_addr, src_addr, dst_addr, &gus);
-            {
-                std::lock_guard<std::mutex> lk(req->mtx);
-                req->feat = std::move(feat);
-                req->done = true;
-            }
-            req->cv.notify_all();
-        }
-    };
-    std::thread text_worker(text_worker_fn);
-
     auto add_label = [&](const std::string& prompt) -> bool {
         { std::lock_guard<std::mutex> lk(label_mutex);
           if (std::find(labels.begin(), labels.end(), prompt) != labels.end()) {
               std::cerr << "[LABEL] 已存在: " << prompt << std::endl; return false; } }
-        // ★提交给 text 工作线程 (独立 NPU 执行流), 同步等待结果
-        auto req = std::make_shared<TextReq>();
-        req->prompt = prompt;
-        req->ids = tok.tokenize(prompt);
+        // ★串行模式: 主线程同步编码
+        auto ids = tok.tokenize(prompt);
         emit_txt_enc_start(prompt);
-        { std::lock_guard<std::mutex> lk(req_mutex); req_queue.push_back(req); }
-        req_cv.notify_one();
-        {
-            std::unique_lock<std::mutex> lk(req->mtx);
-            bool ok = req->cv.wait_for(lk, std::chrono::seconds(15), [&]{ return req->done; });
-            if (!ok) {
-                std::cerr << "[LABEL] text 线程超时(15s): " << prompt << std::endl;
-                return false;
-            }
-        }
-        if (req->feat.empty()) { std::cerr << "[LABEL] 编码失败: " << prompt << std::endl; return false; }
+        double gus = 0;
+        auto feat = encode_text(ids, DATA_DIR, device, text_session, text_network,
+                                fpai_device, gather_chunk, idx_addr, src_addr, dst_addr, &gus);
+        // ★排空已在 encode_text 内动态处理 (编码耗时自适应 10-20ms)
+        if (feat.empty()) { std::cerr << "[LABEL] 编码失败: " << prompt << std::endl; return false; }
+        emit_txt_enc_done(prompt, gus);
         std::lock_guard<std::mutex> lk(label_mutex);
-        labels.push_back(prompt); label_feats.push_back(req->feat);
+        labels.push_back(prompt); label_feats.push_back(feat);
         std::cerr << "[LABEL] + '" << prompt << "' (共 " << labels.size() << ")" << std::endl;
         emit_web_labels();
-        // ★add 后 NPU 排空: text forward 刚完成, 给 NPU 会话状态稳定时间再恢复分类
-        std::this_thread::sleep_for(std::chrono::milliseconds(80));
         return true;
     };
 
@@ -850,6 +894,7 @@ int main(int argc, char* argv[])
                         if (!emb.empty()) {
                             std::vector<std::pair<float,int>> scores;
                             { std::lock_guard<std::mutex> lk(label_mutex);
+                              // 直接 cosine (平滑已去除: 额外计算可能引入卡死)
                               for (int i=0;i<(int)label_feats.size();++i)
                                   scores.push_back({ cosine(emb, label_feats[i]), i });
                               std::sort(scores.begin(),scores.end(),
@@ -892,7 +937,6 @@ int main(int argc, char* argv[])
                             // 图像编码器状态事件
                             emit_img_enc(n);
                         }
-                        { std::lock_guard<std::mutex> rlk2(g_reset_mutex); device.reset(1); }
                     }
 
                     // arm 下一次 ImageMake
@@ -901,6 +945,10 @@ int main(int argc, char* argv[])
                     initImageMake(fpai_device, 0, NET_W, NET_H, 3, imk_addr, 8, empty_vec, empty_vec);
                     reg.write(IMK_BASE + 0x254, 0x4);
                     imk_armed.store(true);
+                    // ★周期排空: 每 100 次图像编码 20ms
+                    if (img_enc_count.load() % 100 == 0) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    }
                 }
                 // HDMI 叠加分类结果
                 { std::lock_guard<std::mutex> dlk(cls_disp_mutex);
@@ -991,20 +1039,13 @@ int main(int argc, char* argv[])
                     std::string prompt = query_text;
                     query_pending.store(false);
                     std::cerr << "[TEXT] 编码: " << prompt << std::endl;
-                    // ★提交给 text 工作线程, 同步等待
-                    auto req = std::make_shared<TextReq>();
-                    req->prompt = prompt;
-                    req->ids = tok.tokenize(prompt);
+                    // ★串行模式: 主线程同步编码
+                    auto ids = tok.tokenize(prompt);
                     emit_txt_enc_start(prompt);
-                    { std::lock_guard<std::mutex> lk(req_mutex); req_queue.push_back(req); }
-                    req_cv.notify_one();
-                    std::vector<float> tf;
-                    {
-                        std::unique_lock<std::mutex> lk(req->mtx);
-                        bool ok = req->cv.wait_for(lk, std::chrono::seconds(15), [&]{ return req->done; });
-                        if (!ok) std::cerr << "[TEXT] text 线程超时(15s)" << std::endl;
-                        else tf = req->feat;
-                    }
+                    double gus = 0;
+                    auto tf = encode_text(ids, DATA_DIR, device, text_session, text_network,
+                                          fpai_device, gather_chunk, idx_addr, src_addr, dst_addr, &gus);
+                    // ★排空已在 encode_text 内动态处理
                     if (!tf.empty()) {
                             // ★三会话冲突处理: 重新 apply 恢复 pre/post 部署
                             pre_session.apply();
@@ -1058,8 +1099,7 @@ int main(int argc, char* argv[])
                                 top1_idx.store(ki); top1_text=buf;
                             }
                         }
-                        // ★查询后 NPU 排空: text forward 刚完成, 稳定后再恢复采集/分类
-                        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+                        // ★延迟已去除: 修复B 后 NPU 会话稳定, 无需排空等待
                 }
 
                 // ---- 显示: Top-1命中 / 回放 / 待机 ----
@@ -1292,9 +1332,6 @@ int main(int argc, char* argv[])
         }
     }
 
-    text_worker_run.store(false);   // ★停止 text 工作线程
-    req_cv.notify_all();
-    if (text_worker.joinable()) text_worker.join();
     ca.stop(); da.stop();
     Device::Close(device);
     return 0;

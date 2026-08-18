@@ -350,7 +350,6 @@ label.fld{font-size:11px;color:var(--text-dim);display:block;margin-bottom:3px;}
           <div class="enc-metric"><div class="k">Resize 硬算子</div><div class="v" id="enc-image-resize">-- <small>us</small></div></div>
           <div class="enc-metric"><div class="k">FWHT 硬算子</div><div class="v" id="enc-image-fwht">-- <small>us</small></div></div>
           <div class="enc-metric"><div class="k">单帧总耗时</div><div class="v" id="enc-image-frame">-- <small>ms</small></div></div>
-          <div class="enc-metric"><div class="k">推理帧率</div><div class="v" id="enc-image-fps">-- <small>fps</small></div></div>
         </div>
       </div>
     </div>
@@ -411,7 +410,6 @@ const BAR_LOW = 0.25, BAR_HIGH = 0.85;  // 进度条映射区间
 let chartInstance = null;
 let lastTopk = [];             // 缓存最近一次分类 Top-K, 阈值变动时重渲染
 let lastSearch = null;         // 缓存最近搜图结果
-let inferFrameTs = [];         // 计算推理帧率
 
 // ============================================================
 // WebSocket
@@ -499,15 +497,6 @@ function renderInference(topk){
   const heroLabel = document.getElementById('hero-label');
   const heroSub = document.getElementById('hero-sub');
   const heroTag = document.getElementById('hero-tag');
-
-  // 推理帧率
-  const now = performance.now();
-  inferFrameTs.push(now);
-  inferFrameTs = inferFrameTs.filter(t => now - t < 3000);
-  if(inferFrameTs.length >= 2){
-    const fps = (inferFrameTs.length - 1) / ((inferFrameTs[inferFrameTs.length-1] - inferFrameTs[0]) / 1000);
-    document.getElementById('enc-image-fps').innerHTML = fps.toFixed(1) + ' <small>fps</small>';
-  }
 
   if(!topk || !topk.length){ return; }
   const top1 = topk[0];

@@ -197,7 +197,7 @@ HDMI 回调 (每帧, 按 app_mode 分发):
 | 文本编码超时 | text 线程 15s 看门狗 → add 失败返回, 程序继续 |
 | 分类 nan | 检测到 nan → 用上一次检测结果覆盖 + `[NAN]` 提示 |
 | 初始化标签 nan | label_feat 含 nan → 自动重试编码一次 |
-| 三会话冲突规避 | text 独立线程 + 双互斥锁 + add 后 80ms NPU 排空 |
+| 三会话冲突规避 | text 独立线程 + 双互斥锁 + **去每帧 reset + 超时 apply**（见 3.6） |
 
 ### 3.6 关键运行机制细节
 
@@ -211,14 +211,32 @@ HDMI 回调 (每帧, 按 app_mode 分发):
 5. 读 CYCLE (÷200MHz = μs) → 解锁 → chunk.read (锁外)
 ```
 
-**reset 策略**：主线程每帧分类后 `device.reset(1)`（与 text forward 经 g_reset_mutex 互斥）；
-encode_text 路径不做 reset（曾破坏 pre/post 会话上下文）。
+**reset 策略（板上验证 10000 帧 + 大量标签稳定）**：
+- **正常路径无 `device.reset(1)`**——NPU 会话（pre/post）状态连续运行
+- **异常路径**（pre/post 超时丢帧）→ `reset(1)` + `session.apply()` **重建会话**——下次 forward 恢复正常
+- text forward 与 reset 经 g_reset_mutex 互斥
 
-**add 流程（异步）**：
+**add 流程（异步，零延迟）**：
 ```
 回调: add 命令 → 查重 → tokenize → 请求入队 → 等待结果 (15s 看门狗)
-text 线程: 取请求 → encode_text → 特征回传 → 回调更新 labels → 80ms NPU 排空
+text 线程: 取请求 → encode_text → 特征回传 → 回调更新 labels → 立即恢复 (无排空延迟)
 ```
+
+### 3.6.1 三会话 NPU 协同问题（严重性与解决方案）
+
+**【问题严重性】**：add 标签后必现卡死（早期）→ 运行时间长后**不 add 也偶发卡死**——
+seg_pre 任务提交后 NPU 不执行（waitForReady 2s 超时循环）→ 分类中断，程序不可用（需重启）。
+
+**【根因分析】**：
+1. **每帧 `device.reset(1)` 高频调用** → NPU 会话（pre/post）状态被反复复位——**split 3 会话（text/pre/post）下 reset 干扰会话协同**（web 版 2 会话无此问题，未暴露）
+2. 文本编码插入加剧（会话交替切换冲突）
+
+**【解决方案】**（板上验证：10000 帧 + 大量标签无崩溃）：
+1. **去掉每帧 reset**（正常路径）——NPU 会话状态连续运行，消除劣化源
+2. **超时后 `apply()` 重建会话**——偶发劣化可自愈（单帧恢复，非持续挂起）
+3. **text 独立线程**——消除文本插入对主链路的干扰
+4. **互斥锁**：g_hw_mutex（寄存器区）/ g_reset_mutex（reset 与 forward）
+5. **结果**：无需任何排空延迟——add 零延迟响应，长时间运行稳定
 
 ### 3.7 关键配置（configs/app_config_split.yaml）
 
