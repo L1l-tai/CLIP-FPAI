@@ -971,7 +971,7 @@ def update_encoder_state(parsed: dict):
         state.image_encoder_running = True
         state.image_resize_us_last = parsed.get("resize_hw_us", 0)
         state.image_resize_us_avg = parsed.get("resize_avg_us", 0)
-        state.image_frame_ms_last = parsed.get("vis_fwd_ms", 0)
+        state.image_frame_ms_last = parsed.get("vis_fwd_ms", parsed.get("fwd_ms", 0))
         state.fwht_us_last = parsed.get("fwht_us", 0)
         state.fwht_us_avg = parsed.get("fwht_avg_us", 0)
         state.image_enc_count = int(parsed.get("count", 0))

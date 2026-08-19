@@ -165,9 +165,9 @@ static double run_hadamard_768(FPAIDevice& fpai_device, uint32_t reg_base,
         std::vector<int8_t>& dst_buf = dst_buf_cache;
         chunk.write(src_off, (char*)src_buf.data(), src_size);
 
-        // 复位: 寄存器顺序写, 写后读回作 AXI 同步屏障 (确保复位写已到达 FPGA 再 START,
-        // 避免 START 与复位释放的时序竞争导致 DONE 偶发不置位)
-        reg.write(REG_RESET, 1, false);   // FPGA 算子侧复位
+        // ★复位: RESET=1 保持 100us (复位脉冲宽度保证, Gather/FWHT 统一)
+        reg.write(REG_RESET, 1, false);
+        std::this_thread::sleep_for(std::chrono::microseconds(100));   // ★RESET 保持 100us
         reg.write(REG_RESET, 0, false);
         reg.read(REG_RESET, false);       // 同步屏障: 读回等待前面的写完成
 
@@ -254,6 +254,9 @@ static std::vector<float> encode_text(
     int indices_beats = 1, indices_size = indices_beats * 64;
     int elem_size = DATA_WIDTH_BEATS * 64, src_data_size = SEQ * elem_size;
 
+    // ★全流程计时 (测试接口): 起点 = 查表前
+    auto _t_full0 = steady_clock::now();
+
     // ★缓存: token_emb(100MB)/pos_emb 只读一次, 避免每次 add 反复分配/IO
     //   (多次 add 后堆碎片 + IO 延迟是"运行时间长后偶发卡顿"的主要积累源)
     std::vector<float> token_emb, pos_emb;
@@ -284,6 +287,7 @@ static std::vector<float> encode_text(
 
     std::vector<float> mid_in((size_t)SEQ * DIM);
     int eot_idx = 0; int32_t maxv = input_ids[0];
+    auto _t_lookup_ms = duration_cast<microseconds>(steady_clock::now() - _t_full0).count() / 1000.0;   // ① 查表
     for (int i = 0; i < SEQ; i++) {
         int id = input_ids[i];
         for (int j = 0; j < DIM; j++)
@@ -292,6 +296,7 @@ static std::vector<float> encode_text(
     }
 
     // ★text 每次 warm + reset (照 web 版行为): 清 text 状态残留 (串行无并发)
+    auto _t_npu0 = steady_clock::now();   // ② NPU 段起点
     {
         Tensor in_warm = data2Tensor(mid_in.data(), text_network.inputs()[0]);
         auto warm = text_session.forward({in_warm});
@@ -318,8 +323,15 @@ static std::vector<float> encode_text(
     const float* feat_seq = (const float*)out_host.data().cptr();
     std::vector<float> feat_seq_buf(feat_seq, feat_seq + (size_t)SEQ * DIM);
 
+    auto _t_gather0 = steady_clock::now();   // ③ Gather 段起点
+    double _t_npu_ms = duration_cast<microseconds>(steady_clock::now() - _t_npu0).count() / 1000.0;   // ② NPU 段
     auto& reg = fpai_device.defaultRegRegion();
     uint32_t GATHER_BASE = 0x400C0000;
+    // ★Gather 复位: RESET=1 保持 100us (与 FWHT 统一, 保证复位脉冲宽度)
+    reg.write(GATHER_BASE + 0x1DC, 1, false);
+    std::this_thread::sleep_for(std::chrono::microseconds(100));   // ★RESET 保持 100us
+    reg.write(GATHER_BASE + 0x1DC, 0, false);
+    reg.read(GATHER_BASE + 0x1DC, false);   // 同步屏障
     // ★串行模式: 无锁
     std::vector<int8_t> idx_buf(indices_size, 0);
     idx_buf[0] = eot_idx & 0xFF; idx_buf[1] = (eot_idx>>8)&0xFF;
@@ -329,8 +341,6 @@ static std::vector<float> encode_text(
     gather_chunk.write(0, (char*)idx_buf.data(), indices_size);
     gather_chunk.write(indices_size + 4096, (char*)feat_bytes, src_data_size);
 
-    reg.write(GATHER_BASE + 0x1DC, 1, false); std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    reg.write(GATHER_BASE + 0x1DC, 0, false); std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
     reg.write(GATHER_BASE + 0x14, INDICES_LEN, false);
     reg.write(GATHER_BASE + 0x18, DATA_WIDTH_BEATS, false);
@@ -354,6 +364,7 @@ static std::vector<float> encode_text(
     std::vector<float> eot_feat(DIM);
     gather_chunk.read((char*)eot_feat.data(), indices_size + 4096 + src_data_size + 4096, DIM * sizeof(float));
 
+    double _t_gather_ms = duration_cast<microseconds>(steady_clock::now() - _t_gather0).count() / 1000.0;   // ③ Gather 段
     // ★缓存: text_proj 只读一次 (同上, 避免反复分配)
     static std::vector<float> cached_proj;
     static std::string cached_proj_dir;
@@ -373,6 +384,13 @@ static std::vector<float> encode_text(
         text_feat[i] = s;
     }
     l2norm(text_feat);
+    // ★全流程汇总 (测试接口): 查表/NPU/Gather/投影/总计
+    double _t_full_ms = duration_cast<microseconds>(steady_clock::now() - _t_full0).count() / 1000.0;
+    std::cout << "[TEXT] full_ms=" << std::fixed << std::setprecision(1) << _t_full_ms
+              << " (lookup=" << _t_lookup_ms
+              << " npu=" << _t_npu_ms
+              << " gather=" << _t_gather_ms
+              << " proj=" << (_t_full_ms - _t_lookup_ms - _t_npu_ms - _t_gather_ms) << ")" << std::endl;
     return text_feat;
 }
 
@@ -616,7 +634,9 @@ int main(int argc, char* argv[])
 
     // resize 输出 → CPU归一化 → seg_pre NPU → FWHT 硬算子 → seg_post NPU → emb
     // out_fwd_ms: 返回 pre+post NPU forward 总耗时(ms)
-    auto resize_out_to_emb = [&](double* out_fwd_ms = nullptr) -> std::vector<float> {
+    auto resize_out_to_emb = [&](double* out_fwd_ms = nullptr, double resize_ms = 0) -> std::vector<float> {
+        // ★图像编码分段计时 (测试接口): 起点 = resize 输出读回前
+        auto _t_img0 = steady_clock::now();
         // ★预分配复用: 避免每帧 200KB+150KB 堆分配
         static std::vector<uint8_t> rs_out(DST_SZ*DST_SZ*4);
         static std::vector<float> fp32_rgb(DST_SZ*DST_SZ*3);
@@ -628,6 +648,7 @@ int main(int argc, char* argv[])
             fp32_rgb[i*3+2] = ((float)(w&0xFF)/255.f - mean_c[0]) / std_c[0];        // R
         }
         cv::Mat imgf(DST_SZ, DST_SZ, CV_32FC3, fp32_rgb.data());
+        double _t_img_norm = duration_cast<microseconds>(steady_clock::now() - _t_img0).count() / 1000.0;   // 归一化
         // ---- seg_pre: 224x224x3 -> [残差, LN1] (out[0]=残差, out[1]=LN1, 已验证) ----
         Tensor t = CvMat2Tensor(imgf, pre_network, std::make_tuple(DST_SZ, DST_SZ, 3));
         auto _t_fwd = system_clock::now();
@@ -651,6 +672,7 @@ int main(int argc, char* argv[])
                                     (const float*)res_host.data().cptr() + FWHT_ELEMS);
         std::vector<float> ln1((const float*)ln1_host.data().cptr(),
                                (const float*)ln1_host.data().cptr() + FWHT_ELEMS);
+        double _t_img_pre = duration_cast<microseconds>(steady_clock::now() - _t_img0).count() / 1000.0;   // pre 段
         // ---- FWHT 硬算子: LN1 -> rot (50 向量 = 1200 blocks) ----
         std::vector<float> rot(FWHT_ELEMS);
 
@@ -660,6 +682,7 @@ int main(int argc, char* argv[])
 
         fwht_us_last.store(fwht_hw_us);              // 展示口径 = 硬件执行耗时
         fwht_us_sum.store(fwht_us_sum.load() + fwht_hw_us);
+        double _t_img_fwht = duration_cast<microseconds>(steady_clock::now() - _t_img0).count() / 1000.0;   // FWHT 段
         // ---- seg_post: [残差, rot, rot, rot] -> emb (残差在 inputs()[0], 已验证) ----
         Tensor t0 = data2Tensor(residual.data(), post_network.inputs()[0]);
         Tensor t1 = data2Tensor(rot.data(), post_network.inputs()[1]);
@@ -684,14 +707,25 @@ int main(int argc, char* argv[])
         std::vector<float> emb((const float*)emb_t.data().cptr(),
                                (const float*)emb_t.data().cptr()+DIM);
         l2norm(emb);
+        double _t_img_post = duration_cast<microseconds>(steady_clock::now() - _t_img0).count() / 1000.0;   // post 段
         // ★post 后 reset (pre 不 reset, post reset — 每帧最后 NPU 操作后清理)
         device.reset(1);
+        double _t_img_total = duration_cast<microseconds>(steady_clock::now() - _t_img0).count() / 1000.0;
+        // ★图像编码分段汇总 (测试接口)
+        std::cout << "[IMG] total_ms=" << std::fixed << std::setprecision(2) << _t_img_total
+                  << " (resize=" << resize_ms
+                  << " norm=" << _t_img_norm
+                  << " pre=" << (_t_img_pre - _t_img_norm)
+                  << " fwht=" << (_t_img_fwht - _t_img_pre)
+                  << " post=" << (_t_img_post - _t_img_fwht)
+                  << " reset=" << (_t_img_total - _t_img_post) << ")" << std::endl;
         return emb;
     };
     // 摄像头帧 → emb
     auto encode_camera_frame = [&]() -> std::vector<float> {
         auto _t_full = system_clock::now();
         vision_busy.store(true);
+        auto _t_cam0 = steady_clock::now();   // ★resize 段起点 (ImageMake 前)
         auto _t_start = system_clock::now();
         runImageMakeForward(fpai_device, 0, NET_W, NET_H, 3, imk_addr, 8);
         // ★预分配复用: 避免每帧 0.9MB+1.2MB 堆分配
@@ -716,8 +750,9 @@ int main(int argc, char* argv[])
         double rs_us = rs_cycles / 200.0;
         img_resize_us_last.store(rs_us);
         img_resize_us_sum.store(img_resize_us_sum.load() + rs_us);
+        // ★resize 段口径 = 硬算子计算时间 (rs_cycles/200MHz, 不含 ImageMake 等帧/CPU 往返)
         double fwd_ms = 0;
-        auto emb = resize_out_to_emb(&fwd_ms);
+        auto emb = resize_out_to_emb(&fwd_ms, rs_us);
         if (!emb.empty()) {
             img_enc_count.fetch_add(1);
             img_frame_ms_last.store(fwd_ms);
@@ -755,7 +790,7 @@ int main(int argc, char* argv[])
         img_resize_us_last.store(rs_us);
         img_resize_us_sum.store(img_resize_us_sum.load() + rs_us);
         double fwd_ms2 = 0;
-        auto emb = resize_out_to_emb(&fwd_ms2);
+        auto emb = resize_out_to_emb(&fwd_ms2, 0);   // cv resize 段不计入 (传 0)
         if (!emb.empty()) {
             img_enc_count.fetch_add(1);
             img_frame_ms_last.store(fwd_ms2);
