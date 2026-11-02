@@ -1,4 +1,4 @@
-# iCraft 算子演示系统 — 部署与使用指引
+# iCraft 算子测试系统 — 部署与使用指引
 
 ## 网络拓扑
 
@@ -15,7 +15,7 @@ PC (192.168.137.1) ──以太网── 板卡 (192.168.137.10)
 ### 1.1 安装 Python 依赖
 
 ```bash
-# 基础（算子演示必需）
+# 基础（算子测试必需）
 pip install -r requirements.txt   # 全部 Web 服务依赖 (fastapi/uvicorn/opencv/matplotlib 等)
 
 # CLIP 推理（若走 PC 端 ONNX 推理，需要时安装）

@@ -1,17 +1,7 @@
-# 环境搭建指南
-
-> 从零搭建本项目的编译/部署环境。技术实现见 [README.md](./README.md)，目录与操作见 [STRUCTURE.md](./STRUCTURE.md)。
-> 本文参考 FPAI 部署的相关例程，结合本项目（CLIP + 自研硬算子）的实际环境整理。
-
----
-
-## 快速开始（最短路径：从环境到看到画面）
+## 快速开始
 
 ```bash
-# 1. 环境准备 (板卡 FMQL30TAI + 开发机, 见第 2/4 节)
-#    依赖: deploy/deps (1.2G) + 模型 fmodel/vision (大文件, 需单独获取)
 
-# 2. 生成板端数据 (token_emb/pos_emb/text_proj/merges)
 python3 deploy/src/gen_board_data.py
 
 # 3. 编译板端程序
@@ -23,8 +13,8 @@ cmake --build build/ZG --target clip_app_web clip_app_split -j4
 
 # 5. 启动 Web (板卡上)
 cd web_ui && pip install -r requirements.txt
-python3 server_onboard.py --host 0.0.0.0 --port 8888   # 推荐: web_app 稳定演示
-# 或 python3 server_split.py ...                          # split: 最新优化方案
+python3 server_onboard.py --host 0.0.0.0 --port 8888   # 推荐: web_app
+# 或 python3 server_split.py ...                          # split: 三段切分链路
 
 # 6. 上位机浏览器: http://192.168.137.10:8888 → 模型预热 → 启动推理 → 实时图文对齐
 ```
@@ -88,7 +78,7 @@ SDI 相机(RGB565) → ImageMake(PL) → DDR → resize硬算子(PL) → CPU归�
 
 | 软件           | 本项目实测            | 说明                                                                        |
 | -------------- | --------------------- | --------------------------------------------------------------------------- |
-| icraft SDK     | **3.31 / 3.33** | 本项目 deps 使用 3.33.1；**建议 ≥3.31**（3.36/3.37 亦可，接口兼容） |
+| icraft SDK     | **3.31 / 3.33** | 本项目 deps 使用 3.33.1 |
 | Docker Desktop | 任意                  | 交叉编译容器                                                                |
 | CMake          | ≥3.16                | 板端程序构建                                                                |
 | aarch64 工具链 | gcc/g++ 9             | 容器内                                                                      |
@@ -121,9 +111,6 @@ Ubuntu20.04/
 └── clip-hhx-new/              # 模型切分工作区（seg 模型源）
 ```
 
-**⚠️** `compile/CMakeLists.txt` 引用 `../deploy/deps`
-
-**⚠️ 大文件不入 git**（.git 仅跟踪代码/文档）：以下内容克隆后需**单独获取**（内部共享盘/网盘，或由维护者分发）：
 
 - `deploy/deps/`（1.2GB：modelzoo_utils + thirdparty）
 - `fmodel/vision/`（~800MB：onnx 模型）、`imodel/vision/split/`（240MB：seg 编译产物）
@@ -227,7 +214,6 @@ cmake --build build/ZG --target clip_app_split -j4
 mount /dev/mmcblk0p1 /root/bits
 cd /root/bit
 reboot #重启后bit流生效
-#⚠️ 当前 TPWS −0.479ns 与企业提供的硬算子模板一致，轻微时序违例不影响上板结果
 ```
 
 ---
@@ -279,27 +265,24 @@ cd web_ui && python3 server_split.py
 # 上位机浏览器: http://192.168.137.10:8888
 ```
 
-【图片 3（可选）：板卡部署目录结构图】——如有需要，按上述树形结构制作。
-
 ---
 
-### 9.x 程序运行状态与自愈机制（当前实测 2026-08）
+### 9.x 运行状态与重置机制
 
-**性能**（2026-08 统一口径）：
+**性能**：
 - 实时展示：**~20 FPS**
-- 图像编码器：无硬算子 **86.9ms** → 本作品 **47.3ms**（加速 83.7%）
-- 文本编码器：无硬算子 **54.8ms** → 本作品 **42.6ms**（加速 28.6%）
-- 双路总推理：无硬算子 **141.7ms** → 本作品 **89.9ms**（加速 57.6%）
+- 图像编码器：无硬算子 **86.9ms** → 本方案 **47.3ms**（加速 83.7%）
+- 文本编码器：无硬算子 **54.8ms** → 本方案 **42.6ms**（加速 28.6%）
+- 双路总推理：无硬算子 **141.7ms** → 本方案 **89.9ms**（加速 57.6%）
 
 **稳定性**：
 
-- **大量添加标签**时可能引入卡顿（根因待进一步排查，与相机/缓冲无关）——通过**程序状态重置**解决
+- **标签规模较大**时若出现 seg_pre 任务延迟，通过**程序状态重置**恢复
 - **程序状态重置机制**（自动，无需人工干预）：
   1. NPU 任务超时（2s）→ 打印 `[FATAL]` → **程序自重启**（exec，全新状态）
   2. 重启前保存状态到 `board_data/`（label_cache.txt / label_feats_cache.bin / state_cache.txt）
   3. 重启后自动恢复标签 + 帧数 + 直接进入 dual mode——**十几秒内恢复正常工作**
 - 周期排空（每 100 次编码 20ms）+ FWHT 超时重试 + 预分配复用（零堆碎片）
-- 后续将继续排查根因
 
 **观察日志**：
 

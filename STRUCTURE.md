@@ -68,7 +68,7 @@ clip-vit-base-patch32-zg/
 ├── compile/                  # 编译环境
 │   ├── CMakeLists.txt        #   源文件指向 ../deploy/src, 依赖 ../deploy/deps
 │   └── build/                #   构建产物 (build/ZG 交叉编译)
-├── web_ui/                   # Web 演示系统
+├── web_ui/                   # Web 界面系统
 │   ├── server_split.py       #   split 版服务 (启动 clip_app_split)
 │   ├── server_onboard.py     #   web 版服务 (启动 clip_app_web)
 │   ├── operator_analysis_onboard.py  # 算子分析后端

@@ -1,7 +1,7 @@
 # 模型切分工作区（Hadamard/FWHT 硬算子接入）
 
 > 视觉编码器三段切分：`seg_pre(NPU) → FWHT 硬算子(FPGA) → seg_post(NPU)`。
-> 详细技术背景（血泪坑、验证栈、40 注入点分布）见同目录 [KB_增补_图像编码器Hadamard切分.md](./KB_增补_图像编码器Hadamard切分.md)。
+> 详细技术背景（常见问题、验证栈、40 注入点分布）见同目录 [KB_增补_图像编码器Hadamard切分.md](./KB_增补_图像编码器Hadamard切分.md)。
 
 ---
 
@@ -85,7 +85,7 @@ icraft compile -c compile_vit_seg_post.toml
 产物输出到项目 `imodel/vit_seg_pre/`、`imodel/vit_seg_post/`：
 `vit_seg_pre_ZG.{json,raw}`、`vit_seg_post_ZG.{json,raw}`
 
-**toml 关键配置**（血泪坑摘要）：
+**toml 关键配置**（常见问题摘要）：
 
 | 项                         | seg_pre                                        | seg_post                           |
 | -------------------------- | ---------------------------------------------- | ---------------------------------- |
@@ -141,10 +141,10 @@ python gen_vit_board_io.py <测试图>
 
 | 文件                                  | 说明                                                                                                                     |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `KB_增补_图像编码器Hadamard切分.md` | **核心知识文档**：切分方案、40 注入点分布、血泪坑（编译/字节序/INT8）、host 验证栈、交接清单                       |
+| `KB_增补_图像编码器Hadamard切分.md` | **核心知识文档**：切分方案、40 注入点分布、常见问题（编译/字节序/INT8）、host 验证栈、交接清单                       |
 | `dryrun_vit_split.py`               | 三段切分 host 验证：seg_pre→FWHT 模拟→seg_post vs 整模型，支持 exact/FP16 两种模拟精度、出图、导出 bin                 |
 | `gen_vit_board_io.py`               | 生成板上 cpp 输入 bin（vit_pre_in.bin）与整模型参考 bin（vit_ref_embeds.bin）                                            |
-| `split_vit_generalize.py`           | NHWC 输入适配参考（手动加 Transpose 版）——**已弃用**（血泪坑 5：Icraft 重复转换报错），保留作数值一致性验证参考  |
+| `split_vit_generalize.py`           | NHWC 输入适配参考（手动加 Transpose 版）——**已弃用**（问题 5：Icraft 重复转换报错），保留作数值一致性验证参考  |
 | `compile_vit_seg_pre.toml`          | seg_pre 编译配置（单输入图像，双输出 [残差, LN1]）                                                                       |
 | `compile_vit_seg_post.toml`         | seg_post 编译配置（四输入 [残差, rot×3]，分号多输入语法）                                                               |
 | `fmodel/vision/split/vit_seg_pre_fixed.onnx` | seg_pre 固定 shape 模型（9.6MB，单一来源）                                                                                 |
@@ -158,7 +158,7 @@ python gen_vit_board_io.py <测试图>
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `clip_hadamard.py`                 | **Hadamard 量化优化核心**：加载 ONNX → 校准激活 → 异常层检测 → 权重旋转 `W'=H@W` → 插入 `MatMul(X,H^T)` → 导出（group_size=64） |
 | `mix_config_hadamard.csv`          | Hadamard 分组配置（40 个注入点：层号/目标 MatMul/权重名/离群率/H 矩阵名）                                                                      |
-| `realtime_open_vocab_detection.py` | 实时开放词表检测（零样本分类演示）                                                                                                             |
+| `realtime_open_vocab_detection.py` | 实时开放词表检测（零样本分类）                                                                                                             |
 | `zero_shot.py`                     | zero-shot 推理脚本（CLIP 图文匹配基础评测）                                                                                                    |
 | `split/`                           | **本目录**：模型切分工作区（FWHT 硬算子接入）                                                                                            |
 
