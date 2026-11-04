@@ -1,0 +1,63 @@
+# =====================================================================
+# seg_post 编译配置 —— [残差, q_rot, k_rot, v_rot] -> image_embeds
+#   四个输入均为非图片特征 [1,50,768],全 FD、全 FP32
+#   多输入语法(官方文档 Part_2_1):
+#     inputs        = 列表的列表,每输入一项
+#     inputs_layout = 单字符串,分号 ; 分隔
+#     inputs_dtype  = 单字符串,分号 ; 分隔
+#   输入顺序 = ../../fmodel/vision/split/vit_seg_post_fixed.onnx 的输入顺序 = [残差, q, k, v],与 cpp inputs()[0..3] 一致
+#   qdtype=bf16(与 seg_pre 一致,CLIP 极端值)
+# =====================================================================
+
+[parse]
+net_name = "vit_seg_post_int8"
+framework = "onnx"
+inputs = [ [1,50,768], [1,50,768], [1,50,768], [1,50,768] ]
+inputs_layout = "FD;FD;FD;FD"                  # 非图片特征全 FD
+inputs_dtype = "FP32;FP32;FP32;FP32"
+pre_method = "nop;nop;nop;nop"
+pre_scale = "nop;nop;nop;nop"
+pre_mean = "nop;nop;nop;nop"
+channel_swap = "nop;nop;nop;nop"
+network = "../../fmodel/vision/split/vit_seg_post_fixed.onnx"   # 固定 shape 版(四输入 [1,50,768],输出 [1,512])
+jr_path = "imodel/vit_seg_post_int8/"  # 输出到项目 imodel/
+target = "zhuge"
+
+[optimize]
+target = "zhuge"
+json = "imodel/vit_seg_post_int8/vit_seg_post_int8_parsed.json"
+raw  = "imodel/vit_seg_post_int8/vit_seg_post_int8_parsed.raw"
+log_path = "./imodel/optimize"
+jr_path = "imodel/vit_seg_post_int8/"  # 输出到项目 imodel/
+
+[quantize]
+qdtype = "int8"
+forward_dir = "../../qtset/post_int8/"
+forward_list = "../../qtset/post_int8.txt"
+json = "imodel/vit_seg_post_int8/vit_seg_post_int8_optimized.json"
+raw  = "imodel/vit_seg_post_int8/vit_seg_post_int8_optimized.raw"
+jr_path = "imodel/vit_seg_post_int8/"  # 输出到项目 imodel/
+per = "channel"
+target = "zhuge"
+
+[adapt]
+target = "zhuge"
+json = "imodel/vit_seg_post_int8/vit_seg_post_int8_quantized.json"
+raw  = "imodel/vit_seg_post_int8/vit_seg_post_int8_quantized.raw"
+jr_path = "imodel/vit_seg_post_int8/"  # 输出到项目 imodel/
+
+[generate]
+json = "imodel/vit_seg_post_int8/vit_seg_post_int8_adapted.json"
+raw  = "imodel/vit_seg_post_int8/vit_seg_post_int8_adapted.raw"
+jr_path = "imodel/vit_seg_post_int8/"  # 输出到项目 imodel/
+
+[run]
+log_time = true
+log_io = true
+dump_format = "SFT"
+json = "imodel/ZG/vit_seg_post_int8_ZG.json"
+raw  = "imodel/ZG/vit_seg_post_int8_ZG.raw"
+# 多输入 run 验证:四个 bin,顺序同 inputs;若 run 报错可跳过(实际用自己的 cpp)
+input = "board_data/vit_post_res.bin;board_data/vit_post_q.bin;board_data/vit_post_k.bin;board_data/vit_post_v.bin"
+log_path = "./logs/"
+backends = "ZG330,axi://zg330aiu?npu=0x40000000&dma=0x80000000;"
